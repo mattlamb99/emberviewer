@@ -139,6 +139,27 @@ pub struct App {
     /// Active mDNS discovery, if running.
     discovery: Option<crate::discovery::Discovery>,
     show_discovery: bool,
+    show_about: bool,
+}
+
+/// The project's warm-orange brand accent.
+const ACCENT: egui::Color32 = egui::Color32::from_rgb(217, 119, 43);
+
+/// Apply the chosen base theme (dark/light) and overlay a hint of the brand
+/// accent. Used both at startup and when the theme toggle changes.
+fn apply_theme(ctx: &egui::Context, dark: bool) {
+    let mut visuals = if dark {
+        egui::Visuals::dark()
+    } else {
+        egui::Visuals::light()
+    };
+    // Selection picks up a muted accent (also drives the matrix crosspoint
+    // highlight and the row-selection tint, which derive from this colour).
+    visuals.selection.bg_fill = ACCENT.gamma_multiply(if dark { 0.55 } else { 0.40 });
+    visuals.selection.stroke.color = ACCENT;
+    visuals.hyperlink_color = ACCENT;
+    visuals.widgets.hovered.bg_stroke.color = ACCENT.gamma_multiply(0.6);
+    ctx.set_visuals(visuals);
 }
 
 impl App {
@@ -165,7 +186,9 @@ impl App {
             show_log: false,
             discovery: None,
             show_discovery: false,
+            show_about: false,
         };
+        apply_theme(&cc.egui_ctx, app.settings.dark_mode);
         app.apply_startup_mode(&cc.egui_ctx.clone());
         app
     }
@@ -395,6 +418,11 @@ impl eframe::App for App {
                 {
                     self.toggle_discovery();
                 }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.selectable_label(self.show_about, "About").clicked() {
+                        self.show_about = !self.show_about;
+                    }
+                });
             });
         });
 
@@ -402,6 +430,7 @@ impl eframe::App for App {
         self.add_dialog(&ctx);
         self.folder_dialog(&ctx);
         self.options_window(&ctx);
+        self.about_window(&ctx);
         self.discovery_window(&ctx);
         self.tabs(ui);
 
@@ -945,6 +974,13 @@ impl App {
                         "Matrix: targets on top (else sources on top)",
                     )
                     .changed();
+                if ui
+                    .checkbox(&mut self.settings.dark_mode, "Dark mode")
+                    .changed()
+                {
+                    apply_theme(ctx, self.settings.dark_mode);
+                    changed = true;
+                }
             });
         self.show_options = open;
         if changed {
@@ -952,6 +988,30 @@ impl App {
                 self.status_line = format!("could not save settings: {e}");
             }
         }
+    }
+
+    fn about_window(&mut self, ctx: &egui::Context) {
+        if !self.show_about {
+            return;
+        }
+        let mut open = self.show_about;
+        egui::Window::new("About")
+            .open(&mut open)
+            .resizable(false)
+            .collapsible(false)
+            .show(ctx, |ui| {
+                ui.heading(egui::RichText::new("emberviewer").color(ACCENT));
+                ui.label("A cross-platform Ember+ viewer");
+                ui.add_space(4.0);
+                ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
+                ui.label("An open replacement for Lawo's EmberPlusView.");
+                ui.add_space(6.0);
+                ui.separator();
+                ui.add_space(6.0);
+                ui.hyperlink_to("GitHub repository", "https://github.com/m-l2/emberviewer");
+                ui.hyperlink_to("Website / docs", "https://m-l2.github.io/emberviewer");
+            });
+        self.show_about = open;
     }
 
     fn toggle_discovery(&mut self) {

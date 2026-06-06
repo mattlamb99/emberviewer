@@ -82,6 +82,9 @@ pub struct Settings {
     /// across the top when false.
     #[serde(default = "default_true")]
     pub matrix_targets_on_top: bool,
+    /// Use egui's dark theme (light theme when false).
+    #[serde(default = "default_true")]
+    pub dark_mode: bool,
     /// Optional path to append parameter-change logs to (empty = window only).
     #[serde(default)]
     pub log_file: String,
@@ -100,6 +103,7 @@ impl Default for Settings {
             clear_tree_on_disconnect: false,
             send_keepalive: true,
             matrix_targets_on_top: true,
+            dark_mode: true,
             log_file: String::new(),
             last_connected: Vec::new(),
         }
