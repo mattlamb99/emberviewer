@@ -17,6 +17,10 @@ pub enum NetCommand {
     GetDirectory(Vec<u32>),
     /// Set the parameter at this path to a new value.
     SetValue(Vec<u32>, Value),
+    /// Subscribe to value changes of the parameter at this path.
+    Subscribe(Vec<u32>),
+    /// Unsubscribe from value changes of the parameter at this path.
+    Unsubscribe(Vec<u32>),
     /// Close the connection.
     Disconnect,
 }
@@ -106,6 +110,16 @@ async fn run_connection(
                 }
                 Some(NetCommand::SetValue(path, value)) => {
                     if let Err(e) = writer.set_value(&path, value).await {
+                        emit!(NetEvent::Error(e.to_string()));
+                    }
+                }
+                Some(NetCommand::Subscribe(path)) => {
+                    if let Err(e) = writer.subscribe(&path).await {
+                        emit!(NetEvent::Error(e.to_string()));
+                    }
+                }
+                Some(NetCommand::Unsubscribe(path)) => {
+                    if let Err(e) = writer.unsubscribe(&path).await {
                         emit!(NetEvent::Error(e.to_string()));
                     }
                 }

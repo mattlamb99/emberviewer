@@ -196,6 +196,16 @@ impl ProviderWriter {
         self.send(&Root::set_value_at(path, value)).await
     }
 
+    /// Subscribe to value changes of the parameter at `path`.
+    pub async fn subscribe(&mut self, path: &[u32]) -> Result<(), ConnError> {
+        self.send(&Root::subscribe_at(path)).await
+    }
+
+    /// Unsubscribe from value changes of the parameter at `path`.
+    pub async fn unsubscribe(&mut self, path: &[u32]) -> Result<(), ConnError> {
+        self.send(&Root::unsubscribe_at(path)).await
+    }
+
     /// Reply to a provider keep-alive request.
     pub async fn keepalive_response(&mut self) -> Result<(), ConnError> {
         self.write

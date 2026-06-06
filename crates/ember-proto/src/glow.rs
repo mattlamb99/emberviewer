@@ -528,6 +528,14 @@ impl Command {
             options: field_mask.map(CommandOptions::DirFieldMask),
         }
     }
+
+    /// A bare command carrying only a command number (subscribe/unsubscribe).
+    pub fn bare(number: Integer32) -> Self {
+        Command {
+            number,
+            options: None,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -703,6 +711,27 @@ impl Root {
         Root::from_element(RootElement::QualifiedNode(qn))
     }
 
+    /// Subscribe to value changes of the parameter at `path`.
+    pub fn subscribe_at(path: &[u32]) -> Self {
+        Root::command_on_parameter(path, command_type::SUBSCRIBE)
+    }
+
+    /// Unsubscribe from value changes of the parameter at `path`.
+    pub fn unsubscribe_at(path: &[u32]) -> Self {
+        Root::command_on_parameter(path, command_type::UNSUBSCRIBE)
+    }
+
+    /// Address the parameter at `path` and place `command_number` in its children.
+    fn command_on_parameter(path: &[u32], command_number: Integer32) -> Self {
+        let command = Element::Command(Command::bare(command_number));
+        let qp = QualifiedParameter {
+            path: RelativeOid::from_arcs(path),
+            contents: None,
+            children: Some(ElementCollection(vec![ElementEntry(command)])),
+        };
+        Root::from_element(RootElement::QualifiedParameter(qp))
+    }
+
     /// Build a request that sets the parameter at `path` to `value`.
     ///
     /// Per Ember+, a set is just the parameter sent back carrying only the new
@@ -779,6 +808,24 @@ mod tests {
             let oid = RelativeOid::from_arcs(&arcs);
             assert_eq!(oid.arcs(), arcs);
         }
+    }
+
+    #[test]
+    fn subscribe_request_roundtrips() {
+        let req = Root::subscribe_at(&[0, 1, 0]);
+        let bytes = encode_root(&req).unwrap();
+        let back = decode_root(&bytes).unwrap();
+        let Root::Elements(coll) = back else {
+            panic!("expected elements")
+        };
+        let RootElementEntry(RootElement::QualifiedParameter(qp)) = &coll.0[0] else {
+            panic!("expected qualified parameter")
+        };
+        assert_eq!(qp.path.arcs(), vec![0, 1, 0]);
+        let ElementEntry(Element::Command(cmd)) = &qp.children.as_ref().unwrap().0[0] else {
+            panic!("expected child command")
+        };
+        assert_eq!(cmd.number, command_type::SUBSCRIBE);
     }
 
     #[test]

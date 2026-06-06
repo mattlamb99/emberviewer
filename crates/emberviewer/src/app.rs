@@ -1,8 +1,8 @@
 //! The eframe application: address-book sidebar + provider tree browser.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use ember_proto::glow::Value;
+use ember_proto::glow::{self, Value};
 
 use crate::address_book::{AddressBook, Id, Node, DEFAULT_PORT};
 use crate::model::{format_value, TreeModel};
@@ -19,6 +19,8 @@ struct Session {
     open: HashMap<Vec<u32>, bool>,
     /// In-progress value edits, keyed by path.
     edits: HashMap<Vec<u32>, String>,
+    /// Parameters we currently hold a value-change subscription for.
+    subscribed: HashSet<Vec<u32>>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -83,6 +85,7 @@ impl App {
                 status: Status::Connecting,
                 open: HashMap::new(),
                 edits: HashMap::new(),
+                subscribed: HashSet::new(),
             },
         );
         self.active = Some(id);
@@ -291,28 +294,47 @@ impl App {
         });
         ui.separator();
 
-        // Collect commands to send after the immutable render borrow ends.
+        // Collect commands to send, and the set of parameters currently on
+        // screen (so we can manage subscriptions), after the render borrow ends.
         let mut commands: Vec<NetCommand> = Vec::new();
+        let mut visible: Vec<Vec<u32>> = Vec::new();
         let roots = session.tree.roots.clone();
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 for root in &roots {
-                    render_entry(ui, session, root, &mut commands);
+                    render_entry(ui, session, root, &mut commands, &mut visible);
                 }
             });
+
+        // Subscribe to newly-visible parameters; unsubscribe ones now hidden.
+        let visible: HashSet<Vec<u32>> = visible.into_iter().collect();
+        for path in &visible {
+            if !session.subscribed.contains(path) {
+                commands.push(NetCommand::Subscribe(path.clone()));
+            }
+        }
+        for path in &session.subscribed {
+            if !visible.contains(path) {
+                commands.push(NetCommand::Unsubscribe(path.clone()));
+            }
+        }
+        session.subscribed = visible;
+
         for cmd in commands {
             session.handle.send(cmd);
         }
     }
 }
 
-/// Recursively render a tree entry; pushes any network commands to `commands`.
+/// Recursively render a tree entry; pushes network commands to `commands` and
+/// records on-screen parameter paths in `visible`.
 fn render_entry(
     ui: &mut egui::Ui,
     session: &mut Session,
     path: &[u32],
     commands: &mut Vec<NetCommand>,
+    visible: &mut Vec<Vec<u32>>,
 ) {
     let Some(entry) = session.tree.get(path).cloned() else {
         return;
@@ -334,7 +356,7 @@ fn render_entry(
             .body(|ui| {
                 let children = entry.children.clone();
                 for child in &children {
-                    render_entry(ui, session, child, commands);
+                    render_entry(ui, session, child, commands, visible);
                 }
                 if children.is_empty() {
                     ui.weak("…");
@@ -351,6 +373,8 @@ fn render_entry(
             commands.push(NetCommand::GetDirectory(path.to_vec()));
         }
     } else {
+        // A leaf parameter is on screen → eligible for a live subscription.
+        visible.push(path.to_vec());
         render_parameter(ui, session, &entry, commands);
     }
 }
@@ -366,7 +390,11 @@ fn render_parameter(
         ui.add_space(18.0);
         ui.label(egui::RichText::new(entry.label()).strong());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if entry.is_writable() {
+            if entry.param_type == Some(glow::parameter_type::TRIGGER) {
+                if ui.button("Fire").clicked() {
+                    commands.push(NetCommand::SetValue(entry.path.clone(), Value::Integer(0)));
+                }
+            } else if entry.is_writable() {
                 editor(ui, session, entry, commands);
             } else if let Some(v) = &entry.value {
                 ui.label(format_value(v));
