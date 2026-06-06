@@ -57,18 +57,17 @@ pub fn meter_readout(entry: &Entry, v: f64) -> String {
     format!("{:.2}{}", v / factor, format_suffix(entry))
 }
 
-/// A green→amber→red colour for a 0..1 meter fraction.
-fn meter_color(frac: f32) -> egui::Color32 {
-    if frac < 0.6 {
-        egui::Color32::from_rgb(40, 170, 80)
-    } else if frac < 0.85 {
-        egui::Color32::from_rgb(210, 170, 30)
-    } else {
-        egui::Color32::from_rgb(210, 70, 60)
-    }
-}
+// Tri-colour meter zones (fraction of full scale): green up to GREEN_TOP, amber
+// to AMBER_TOP, red above — a mostly-green bar with a caution band and a small
+// red headroom band at the top, the usual level-meter convention.
+const MTR_GREEN_TOP: f32 = 0.75;
+const MTR_AMBER_TOP: f32 = 0.90;
+const MTR_GREEN: egui::Color32 = egui::Color32::from_rgb(40, 170, 80);
+const MTR_AMBER: egui::Color32 = egui::Color32::from_rgb(210, 170, 30);
+const MTR_RED: egui::Color32 = egui::Color32::from_rgb(210, 70, 60);
 
-/// Draw a vertical bar-graph meter filling `width` × `height`.
+/// Draw a vertical bar-graph meter filling `width` × `height`, with the lit
+/// portion coloured by zone (green / amber / red from bottom to top).
 pub fn draw_vmeter(
     ui: &mut egui::Ui,
     value: Option<f64>,
@@ -88,12 +87,27 @@ pub fn draw_vmeter(
     if let Some(v) = value {
         let (min, max) = range;
         let frac = (((v - min) / (max - min)) as f32).clamp(0.0, 1.0);
-        let fill_h = (rect.height() - 2.0) * frac;
-        let fill = egui::Rect::from_min_max(
-            egui::pos2(rect.min.x + 1.0, rect.max.y - 1.0 - fill_h),
-            egui::pos2(rect.max.x - 1.0, rect.max.y - 1.0),
-        );
-        painter.rect_filled(fill, 2.0, meter_color(frac));
+        let bottom = rect.max.y - 1.0;
+        let inner_h = rect.height() - 2.0;
+        let left = rect.min.x + 1.0;
+        let right = rect.max.x - 1.0;
+        // Fill the segment [lo, hi] (fractions of full scale) in `color`.
+        let seg = |lo: f32, hi: f32, color: egui::Color32| {
+            if hi > lo {
+                let r = egui::Rect::from_min_max(
+                    egui::pos2(left, bottom - inner_h * hi),
+                    egui::pos2(right, bottom - inner_h * lo),
+                );
+                painter.rect_filled(r, 0.0, color);
+            }
+        };
+        seg(0.0, frac.min(MTR_GREEN_TOP), MTR_GREEN);
+        if frac > MTR_GREEN_TOP {
+            seg(MTR_GREEN_TOP, frac.min(MTR_AMBER_TOP), MTR_AMBER);
+        }
+        if frac > MTR_AMBER_TOP {
+            seg(MTR_AMBER_TOP, frac, MTR_RED);
+        }
     }
     resp
 }
