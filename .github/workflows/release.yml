@@ -34,8 +34,8 @@ jobs:
       - name: Resolve wasm-bindgen version (must match the crate)
         id: wb
         run: |
-          v=$(cargo metadata --format-version=1 --locked \
-                | jq -r '[.packages[] | select(.name=="wasm-bindgen") | .version] | unique | .[0]')
+          v=$(awk '/^name = "wasm-bindgen"$/{f=1} f && /^version = /{gsub(/[",]/,"",$3); print $3; exit}' Cargo.lock)
+          test -n "$v" || { echo "could not resolve wasm-bindgen version from Cargo.lock" >&2; exit 1; }
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "wasm-bindgen $v"
 
