@@ -67,6 +67,8 @@ pub struct App {
     active: Option<Id>,
     add: AddDialog,
     status_line: String,
+    /// Filter text for the providers sidebar.
+    provider_filter: String,
 }
 
 impl App {
@@ -84,6 +86,7 @@ impl App {
             active: None,
             add: AddDialog::default(),
             status_line: String::new(),
+            provider_filter: String::new(),
         }
     }
 
@@ -220,13 +223,31 @@ impl App {
                         }
                     });
                 });
+                ui.horizontal(|ui| {
+                    if !self.provider_filter.is_empty() && ui.small_button("✖").clicked() {
+                        self.provider_filter.clear();
+                    }
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.provider_filter)
+                            .hint_text("🔍 filter")
+                            .desired_width(f32::INFINITY),
+                    );
+                });
                 ui.separator();
 
                 let root = self.book.root().clone();
+                let filter = self.provider_filter.trim().to_lowercase();
                 let mut action = None;
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     for child in &root.children {
-                        Self::sidebar_node(ui, child, &self.sessions, self.active, &mut action);
+                        Self::sidebar_node(
+                            ui,
+                            child,
+                            &self.sessions,
+                            self.active,
+                            &mut action,
+                            &filter,
+                        );
                     }
                 });
                 match action {
@@ -240,24 +261,36 @@ impl App {
     }
 
     /// Render one address-book node (folder or provider) recursively.
+    /// When `filter` is non-empty, only matching providers (and folders with a
+    /// matching descendant) are shown, with those folders force-expanded.
     fn sidebar_node(
         ui: &mut egui::Ui,
         node: &Node,
         sessions: &HashMap<Id, Session>,
         active: Option<Id>,
         action: &mut Option<SidebarAction>,
+        filter: &str,
     ) {
         match node {
             Node::Folder(folder) => {
-                egui::CollapsingHeader::new(format!("📁 {}", folder.name))
-                    .default_open(true)
-                    .show(ui, |ui| {
-                        for child in &folder.children {
-                            Self::sidebar_node(ui, child, sessions, active, action);
-                        }
-                    });
+                if !filter.is_empty() && !folder_matches(folder, filter) {
+                    return;
+                }
+                let mut header = egui::CollapsingHeader::new(format!("📁 {}", folder.name))
+                    .default_open(true);
+                if !filter.is_empty() {
+                    header = header.open(Some(true));
+                }
+                header.show(ui, |ui| {
+                    for child in &folder.children {
+                        Self::sidebar_node(ui, child, sessions, active, action, filter);
+                    }
+                });
             }
             Node::Provider(p) => {
+                if !filter.is_empty() && !p.name.to_lowercase().contains(filter) {
+                    return;
+                }
                 let connected = sessions.contains_key(&p.id);
                 let status = sessions.get(&p.id).map(|s| &s.status);
                 let selected = active == Some(p.id);
@@ -641,6 +674,19 @@ fn editor(
 fn paint_dot(ui: &mut egui::Ui, color: egui::Color32) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, ui.spacing().interact_size.y), egui::Sense::hover());
     ui.painter().circle_filled(rect.center(), 4.5, color);
+}
+
+/// Whether a folder matches the sidebar filter (by its own name or any descendant).
+fn folder_matches(folder: &crate::address_book::Folder, filter: &str) -> bool {
+    folder.name.to_lowercase().contains(filter)
+        || folder.children.iter().any(|c| node_matches(c, filter))
+}
+
+fn node_matches(node: &Node, filter: &str) -> bool {
+    match node {
+        Node::Folder(f) => folder_matches(f, filter),
+        Node::Provider(p) => p.name.to_lowercase().contains(filter),
+    }
 }
 
 /// A status-indicator colour chosen to read on both light and dark themes.
