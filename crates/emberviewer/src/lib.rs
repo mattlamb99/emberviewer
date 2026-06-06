@@ -22,6 +22,7 @@ mod settings;
 mod web;
 #[cfg(target_arch = "wasm32")]
 mod web_transport;
+mod widgets;
 // Some conversions here are server-side only and unused in the wasm build.
 #[allow(dead_code)]
 mod wire;

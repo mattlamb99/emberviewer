@@ -13,6 +13,7 @@ use crate::matrix_view;
 use crate::model::{format_value, Kind, MatrixInfo, TreeModel};
 use crate::net::NetCommand;
 use crate::web_transport::{WebEvent, WsConnection};
+use crate::widgets;
 
 const ACCENT: egui::Color32 = egui::Color32::from_rgb(217, 119, 43);
 
@@ -34,6 +35,15 @@ pub struct WebApp {
     subscribed: HashSet<Vec<u32>>,
     /// In-progress string edits, keyed by path.
     edits: HashMap<Vec<u32>, String>,
+    /// Function argument input buffers: (function path, arg index) -> text.
+    func_inputs: HashMap<(Vec<u32>, usize), String>,
+    /// Last invocation id issued per function path.
+    invocations: HashMap<Vec<u32>, i32>,
+    next_invocation_id: i32,
+    /// Auto-tracked value range per meter path.
+    meter_range: HashMap<Vec<u32>, (f64, f64)>,
+    /// Open "signal parameters" popup (matrix header click): node path + title.
+    signal_params: Option<(Vec<u32>, String)>,
     /// Last "denied" message from the server (read-only mode).
     denied: Option<String>,
     dark: bool,
@@ -60,6 +70,11 @@ impl WebApp {
             matrix_fetch: HashSet::new(),
             subscribed: HashSet::new(),
             edits: HashMap::new(),
+            func_inputs: HashMap::new(),
+            invocations: HashMap::new(),
+            next_invocation_id: 1,
+            meter_range: HashMap::new(),
+            signal_params: None,
             denied: None,
             dark: true,
         }
@@ -71,6 +86,9 @@ impl WebApp {
         self.requested.clear();
         self.matrix_fetch.clear();
         self.subscribed.clear();
+        self.invocations.clear();
+        self.meter_range.clear();
+        self.signal_params = None;
         self.status = None;
         if let Some(c) = &self.conn {
             c.send(ClientMsg::OpenProvider { id });
@@ -190,6 +208,7 @@ impl eframe::App for WebApp {
 
             let mut commands: Vec<NetCommand> = Vec::new();
             let mut visible: Vec<Vec<u32>> = Vec::new();
+            let mut signal_click: Option<(Vec<u32>, bool, u32)> = None;
             let roots = self.tree.roots.clone();
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
@@ -197,19 +216,34 @@ impl eframe::App for WebApp {
                     if roots.is_empty() {
                         ui.weak("Loading…");
                     }
+                    let mut ctx = RenderCtx {
+                        tree: &self.tree,
+                        requested: &mut self.requested,
+                        matrix_fetch: &mut self.matrix_fetch,
+                        edits: &mut self.edits,
+                        func_inputs: &mut self.func_inputs,
+                        invocations: &mut self.invocations,
+                        next_invocation_id: &mut self.next_invocation_id,
+                        meter_range: &mut self.meter_range,
+                        signal_click: &mut signal_click,
+                        commands: &mut commands,
+                        visible: &mut visible,
+                    };
                     for root in &roots {
-                        render_node(
-                            ui,
-                            &self.tree,
-                            root,
-                            &mut self.requested,
-                            &mut self.matrix_fetch,
-                            &mut self.edits,
-                            &mut commands,
-                            &mut visible,
-                        );
+                        render_node(ui, &mut ctx, root);
                     }
                 });
+
+            // A matrix header was clicked → open that signal's parameters.
+            if let Some((mpath, is_target, sig)) = signal_click {
+                if let Some(node) = signal_param_path(&self.tree, &mpath, is_target, sig) {
+                    if self.requested.insert(node.clone()) {
+                        commands.push(NetCommand::GetDirectory(node.clone()));
+                    }
+                    let kind = if is_target { "target" } else { "source" };
+                    self.signal_params = Some((node, format!("{kind} {sig}")));
+                }
+            }
 
             // Reconcile subscriptions with what's on screen.
             let visible: HashSet<Vec<u32>> = visible.into_iter().collect();
@@ -231,22 +265,96 @@ impl eframe::App for WebApp {
                 }
             }
         });
+
+        self.signal_params_window(ui);
     }
+}
+
+/// Mutable render state threaded through the tree renderer.
+struct RenderCtx<'a> {
+    tree: &'a TreeModel,
+    requested: &'a mut HashSet<Vec<u32>>,
+    matrix_fetch: &'a mut HashSet<Vec<u32>>,
+    edits: &'a mut HashMap<Vec<u32>, String>,
+    func_inputs: &'a mut HashMap<(Vec<u32>, usize), String>,
+    invocations: &'a mut HashMap<Vec<u32>, i32>,
+    next_invocation_id: &'a mut i32,
+    meter_range: &'a mut HashMap<Vec<u32>, (f64, f64)>,
+    /// Set to `(matrix path, is_target, signal)` when a matrix header is clicked.
+    signal_click: &'a mut Option<(Vec<u32>, bool, u32)>,
+    commands: &'a mut Vec<NetCommand>,
+    visible: &'a mut Vec<Vec<u32>>,
+}
+
+impl WebApp {
+    /// Popup of a matrix signal's parameters (gain/type/name), opened by clicking
+    /// a row/column header in the grid.
+    fn signal_params_window(&mut self, ui: &mut egui::Ui) {
+        let Some((node_path, title)) = self.signal_params.clone() else {
+            return;
+        };
+        let mut open = true;
+        let mut commands: Vec<NetCommand> = Vec::new();
+        egui::Window::new(format!("Signal · {title}"))
+            .open(&mut open)
+            .resizable(true)
+            .default_width(280.0)
+            .show(ui.ctx(), |ui| {
+                let children = self
+                    .tree
+                    .get(&node_path)
+                    .map(|n| n.children.clone())
+                    .unwrap_or_default();
+                if children.is_empty() {
+                    ui.weak("loading…");
+                    return;
+                }
+                egui::Grid::new(("sigparams", &node_path))
+                    .num_columns(2)
+                    .striped(true)
+                    .show(ui, |ui| {
+                        for cp in &children {
+                            if let Some(ce) = self.tree.get(cp) {
+                                ui.label(egui::RichText::new(&ce.identifier).strong());
+                                param_editor(ui, &self.tree, cp, &mut self.edits, &mut commands);
+                                ui.end_row();
+                            }
+                        }
+                    });
+            });
+        if !open {
+            self.signal_params = None;
+        }
+        if let (Some(conn), Some(id)) = (&self.conn, self.current) {
+            for cmd in &commands {
+                conn.send_command(id, cmd);
+            }
+        }
+    }
+}
+
+/// Resolve the parameter node path for a matrix signal (target/source).
+fn signal_param_path(
+    tree: &TreeModel,
+    mpath: &[u32],
+    is_target: bool,
+    sig: u32,
+) -> Option<Vec<u32>> {
+    let m = tree.get(mpath)?.matrix.as_ref()?;
+    let base = if is_target {
+        m.param_targets_path.as_ref()?
+    } else {
+        m.param_sources_path.as_ref()?
+    };
+    let mut node = base.clone();
+    node.push(sig);
+    Some(node)
 }
 
 /// Render one tree entry (recursively). Pushes commands and records visible
 /// parameter paths.
-#[allow(clippy::too_many_arguments)]
-fn render_node(
-    ui: &mut egui::Ui,
-    tree: &TreeModel,
-    path: &[u32],
-    requested: &mut HashSet<Vec<u32>>,
-    mfetch: &mut HashSet<Vec<u32>>,
-    edits: &mut HashMap<Vec<u32>, String>,
-    commands: &mut Vec<NetCommand>,
-    visible: &mut Vec<Vec<u32>>,
-) {
+fn render_node(ui: &mut egui::Ui, ctx: &mut RenderCtx, path: &[u32]) {
+    let tree = ctx.tree;
     let Some(entry) = tree.get(path) else {
         return;
     };
@@ -260,22 +368,45 @@ fn render_node(
             egui::CollapsingHeader::new(egui::RichText::new(label).strong())
                 .id_salt(path)
                 .show(ui, |ui| {
-                    fetch_matrix(tree, path, m, mfetch, commands);
-                    let _ = matrix_view::render_matrix(ui, entry, m, true, commands);
+                    fetch_matrix(tree, path, m, ctx.matrix_fetch, ctx.commands);
+                    if let Some((is_target, sig)) =
+                        matrix_view::render_matrix(ui, entry, m, true, ctx.commands)
+                    {
+                        *ctx.signal_click = Some((path.to_vec(), is_target, sig));
+                    }
                 });
             return;
         }
 
-        // Function: rich UI is desktop-only for now.
-        let suffix = if matches!(entry.kind, Kind::Function) {
-            "  (function — desktop)"
-        } else {
-            ""
-        };
+        // Function: argument form + invoke + result (shared with the desktop).
+        if let (Kind::Function, Some(f)) = (entry.kind, &entry.function) {
+            let heading = if entry.is_online {
+                egui::RichText::new(label)
+            } else {
+                egui::RichText::new(format!("{label} (offline)")).weak()
+            };
+            egui::CollapsingHeader::new(heading)
+                .id_salt(path)
+                .show(ui, |ui| {
+                    widgets::render_function(
+                        ui,
+                        entry,
+                        f,
+                        ctx.func_inputs,
+                        ctx.invocations,
+                        ctx.next_invocation_id,
+                        &tree.invocation_results,
+                        ctx.commands,
+                    );
+                });
+            return;
+        }
+
+        // A plain node: expand to fetch and show children.
         let heading = if entry.is_online {
-            egui::RichText::new(format!("{label}{suffix}"))
+            egui::RichText::new(label)
         } else {
-            egui::RichText::new(format!("{label}{suffix} (offline)")).weak()
+            egui::RichText::new(format!("{label} (offline)")).weak()
         };
         let header = egui::CollapsingHeader::new(heading)
             .id_salt(path)
@@ -285,18 +416,17 @@ fn render_node(
                     ui.weak("…");
                 }
                 for child in &children {
-                    render_node(ui, tree, child, requested, mfetch, edits, commands, visible);
+                    render_node(ui, ctx, child);
                 }
             });
-        // On first expansion, fetch this node's children.
-        if header.openness > 0.0 && requested.insert(path.to_vec()) {
-            commands.push(NetCommand::GetDirectory(path.to_vec()));
+        if header.openness > 0.0 && ctx.requested.insert(path.to_vec()) {
+            ctx.commands.push(NetCommand::GetDirectory(path.to_vec()));
         }
         return;
     }
 
     // A leaf parameter.
-    visible.push(path.to_vec());
+    ctx.visible.push(path.to_vec());
     ui.horizontal(|ui| {
         let (badge, color) = if entry.is_writable() {
             ("rw", egui::Color32::from_rgb(70, 130, 200))
@@ -306,7 +436,14 @@ fn render_node(
         ui.label(egui::RichText::new(badge).monospace().small().color(color));
         ui.label(egui::RichText::new(entry.label()).strong());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            param_editor(ui, tree, path, edits, commands);
+            param_editor(ui, tree, path, ctx.edits, ctx.commands);
+            // Inline live meter for numeric parameters.
+            if widgets::is_meterable(entry) {
+                let range = widgets::meter_range(entry, ctx.meter_range);
+                let value = entry.value.as_ref().and_then(widgets::value_f64);
+                let h = ui.spacing().interact_size.y;
+                widgets::draw_vmeter(ui, value, range, 10.0, h);
+            }
         });
     });
 }
