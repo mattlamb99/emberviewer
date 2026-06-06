@@ -51,8 +51,7 @@ pub fn meter_range(entry: &Entry, tracked: &mut HashMap<Vec<u32>, (f64, f64)>) -
 }
 
 /// A meter's numeric readout: the value scaled by `factor` with the format unit,
-/// so it matches the displayed (not raw) value. (Desktop meter panel only.)
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+/// so it matches the displayed (not raw) value.
 pub fn meter_readout(entry: &Entry, v: f64) -> String {
     let factor = entry.factor.unwrap_or(1).max(1) as f64;
     format!("{:.2}{}", v / factor, format_suffix(entry))

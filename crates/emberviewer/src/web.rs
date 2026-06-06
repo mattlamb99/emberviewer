@@ -29,8 +29,9 @@ pub struct WebApp {
     current: Option<u64>,
     tree: TreeModel,
     status: Option<WireStatus>,
-    /// Nodes we've already asked to expand (so we fetch each once).
-    requested: HashSet<Vec<u32>>,
+    /// Expanded nodes: path -> (last fetch time, attempts). Re-fetches an
+    /// open-but-empty node a few times so a dropped response self-heals.
+    requested: HashMap<Vec<u32>, (f64, u8)>,
     /// Matrix-related sub-trees already requested (matrix dir, labels, params).
     matrix_fetch: HashSet<Vec<u32>>,
     /// Parameters we hold a subscription for.
@@ -44,11 +45,15 @@ pub struct WebApp {
     next_invocation_id: i32,
     /// Auto-tracked value range per meter path.
     meter_range: HashMap<Vec<u32>, (f64, f64)>,
+    /// Selected parameter (shown large in the right meter pane).
+    selected: Option<Vec<u32>>,
     /// Open "signal parameters" popup (matrix header click): node path + title.
     signal_params: Option<(Vec<u32>, String)>,
     /// Last "denied" message from the server (read-only mode).
     denied: Option<String>,
     dark: bool,
+    /// egui time of the last reconnect attempt (for throttling).
+    last_reconnect: f64,
 }
 
 impl WebApp {
@@ -69,7 +74,7 @@ impl WebApp {
             current: None,
             tree: TreeModel::new(),
             status: None,
-            requested: HashSet::new(),
+            requested: HashMap::new(),
             matrix_fetch: HashSet::new(),
             subscribed: HashSet::new(),
             edits: HashMap::new(),
@@ -77,10 +82,33 @@ impl WebApp {
             invocations: HashMap::new(),
             next_invocation_id: 1,
             meter_range: HashMap::new(),
+            selected: None,
             signal_params: None,
             denied: None,
             dark: true,
+            last_reconnect: 0.0,
         }
+    }
+
+    /// Attempt to (re)open the WebSocket — used at startup and to auto-reconnect
+    /// after the server goes away (e.g. the desktop app was relaunched).
+    fn try_reconnect(&mut self, ctx: &egui::Context, now: f64) {
+        if now - self.last_reconnect < 2.0 {
+            ctx.request_repaint_after(std::time::Duration::from_secs(1));
+            return;
+        }
+        self.last_reconnect = now;
+        if let Some(url) = ws_url() {
+            if let Some(c) = WsConnection::connect(&url, ctx.clone()) {
+                c.send(ClientMsg::Auth {
+                    token: url_query_param("token"),
+                });
+                self.conn = Some(c);
+                self.closed = false;
+            }
+        }
+        // Keep waking so retries continue even when the UI is idle.
+        ctx.request_repaint_after(std::time::Duration::from_secs(2));
     }
 
     fn open_provider(&mut self, id: u64) {
@@ -91,6 +119,7 @@ impl WebApp {
         self.subscribed.clear();
         self.invocations.clear();
         self.meter_range.clear();
+        self.selected = None;
         self.signal_params = None;
         self.status = None;
         if let Some(c) = &self.conn {
@@ -106,6 +135,11 @@ impl WebApp {
                     self.authed = true;
                     self.open_lan = open_lan;
                     self.auth_error = None;
+                    self.closed = false;
+                    // After a reconnect, re-open whatever we were viewing.
+                    if let Some(id) = self.current {
+                        self.open_provider(id);
+                    }
                 }
                 WebEvent::AuthRejected => {
                     self.auth_error = Some("Access denied — check the token in the URL.".into());
@@ -143,6 +177,12 @@ impl eframe::App for WebApp {
         ui.ctx().set_visuals(v);
 
         self.apply_inbound();
+
+        // Auto-reconnect if the socket went away (e.g. the desktop app restarted).
+        let now = ui.input(|i| i.time);
+        if (self.conn.is_none() || self.closed) && self.auth_error.is_none() {
+            self.try_reconnect(ui.ctx(), now);
+        }
 
         let mut pending_open: Option<u64> = None;
 
@@ -192,6 +232,35 @@ impl eframe::App for WebApp {
                 });
         }
 
+        // Right pane: a large meter for the selected parameter.
+        if self.authed {
+            if let Some(entry) = self
+                .selected
+                .clone()
+                .and_then(|p| self.tree.get(&p).cloned())
+                .filter(widgets::is_meterable)
+            {
+                egui::SidePanel::right("meterpane")
+                    .resizable(false)
+                    .exact_width(112.0)
+                    .show_inside(ui, |ui| {
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(4.0);
+                            ui.label(egui::RichText::new(entry.label()).small().strong());
+                            let range = widgets::meter_range(&entry, &mut self.meter_range);
+                            let value = entry.value.as_ref().and_then(widgets::value_f64);
+                            let h = (ui.available_height() - 26.0).max(60.0);
+                            widgets::draw_vmeter(ui, value, range, 38.0, h);
+                            if let Some(v) = value {
+                                ui.label(
+                                    egui::RichText::new(widgets::meter_readout(&entry, v)).small(),
+                                );
+                            }
+                        });
+                    });
+            }
+        }
+
         egui::CentralPanel::default().show_inside(ui, |ui| {
             if let Some(err) = &self.auth_error {
                 ui.colored_label(egui::Color32::LIGHT_RED, err);
@@ -202,7 +271,7 @@ impl eframe::App for WebApp {
                 return;
             }
             if self.closed {
-                ui.colored_label(egui::Color32::LIGHT_RED, "Connection closed.");
+                ui.colored_label(egui::Color32::from_rgb(210, 150, 40), "Reconnecting…");
             }
             if let Some(d) = &self.denied {
                 ui.colored_label(egui::Color32::YELLOW, format!("Denied: {d}"));
@@ -225,6 +294,7 @@ impl eframe::App for WebApp {
                     }
                     let mut ctx = RenderCtx {
                         tree: &self.tree,
+                        now,
                         requested: &mut self.requested,
                         matrix_fetch: &mut self.matrix_fetch,
                         edits: &mut self.edits,
@@ -236,6 +306,7 @@ impl eframe::App for WebApp {
                         commands: &mut commands,
                         visible: &mut visible,
                         row: &mut row,
+                        selected: &mut self.selected,
                     };
                     for root in &roots {
                         render_node(ui, &mut ctx, root);
@@ -245,7 +316,8 @@ impl eframe::App for WebApp {
             // A matrix header was clicked → open that signal's parameters.
             if let Some((mpath, is_target, sig)) = signal_click {
                 if let Some(node) = signal_param_path(&self.tree, &mpath, is_target, sig) {
-                    if self.requested.insert(node.clone()) {
+                    if !self.requested.contains_key(&node) {
+                        self.requested.insert(node.clone(), (now, 1));
                         commands.push(NetCommand::GetDirectory(node.clone()));
                     }
                     let kind = if is_target { "target" } else { "source" };
@@ -313,7 +385,9 @@ fn render_book_node(
 /// Mutable render state threaded through the tree renderer.
 struct RenderCtx<'a> {
     tree: &'a TreeModel,
-    requested: &'a mut HashSet<Vec<u32>>,
+    /// egui time, for throttled re-fetch of empty nodes.
+    now: f64,
+    requested: &'a mut HashMap<Vec<u32>, (f64, u8)>,
     matrix_fetch: &'a mut HashSet<Vec<u32>>,
     edits: &'a mut HashMap<Vec<u32>, String>,
     func_inputs: &'a mut HashMap<(Vec<u32>, usize), String>,
@@ -326,6 +400,8 @@ struct RenderCtx<'a> {
     visible: &'a mut Vec<Vec<u32>>,
     /// Running parameter-row index, for alternating row striping.
     row: &'a mut usize,
+    /// Currently-selected parameter (shown in the right meter pane).
+    selected: &'a mut Option<Vec<u32>>,
 }
 
 impl WebApp {
@@ -461,8 +537,18 @@ fn render_node(ui: &mut egui::Ui, ctx: &mut RenderCtx, path: &[u32]) {
                     render_node(ui, ctx, child);
                 }
             });
-        if header.openness > 0.0 && ctx.requested.insert(path.to_vec()) {
-            ctx.commands.push(NetCommand::GetDirectory(path.to_vec()));
+        if header.openness > 0.0 {
+            // Fetch on first open; re-fetch a few times if still empty (so a
+            // dropped getDirectory response self-heals).
+            let due = match ctx.requested.get(path) {
+                None => true,
+                Some(&(t, n)) => entry.children.is_empty() && n < 3 && (ctx.now - t) > 3.0,
+            };
+            if due {
+                let n = ctx.requested.get(path).map(|&(_, n)| n).unwrap_or(0);
+                ctx.requested.insert(path.to_vec(), (ctx.now, n + 1));
+                ctx.commands.push(NetCommand::GetDirectory(path.to_vec()));
+            }
         }
         return;
     }
@@ -481,16 +567,26 @@ fn render_node(ui: &mut egui::Ui, ctx: &mut RenderCtx, path: &[u32]) {
                 ("ro", egui::Color32::from_gray(140))
             };
             ui.label(egui::RichText::new(badge).monospace().small().color(color));
-            ui.label(egui::RichText::new(entry.label()).strong());
+            // Clicking the name selects the parameter (drives the meter pane).
+            let is_sel = ctx.selected.as_deref() == Some(path);
+            if ui
+                .selectable_label(is_sel, egui::RichText::new(entry.label()).strong())
+                .clicked()
+            {
+                *ctx.selected = Some(path.to_vec());
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_space(6.0);
                 // Inline live meter for numeric parameters (fixed width so the
-                // row doesn't jiggle as the value's digit count changes).
+                // row doesn't jiggle as the value's digit count changes); click to
+                // pin it large in the right pane.
                 if widgets::is_meterable(entry) {
                     let range = widgets::meter_range(entry, ctx.meter_range);
                     let value = entry.value.as_ref().and_then(widgets::value_f64);
                     let h = ui.spacing().interact_size.y;
-                    widgets::draw_vmeter(ui, value, range, 10.0, h);
+                    if widgets::draw_vmeter(ui, value, range, 10.0, h).clicked() {
+                        *ctx.selected = Some(path.to_vec());
+                    }
                 }
                 param_editor(ui, tree, path, ctx.edits, ctx.commands);
             });
