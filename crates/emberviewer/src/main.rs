@@ -4,6 +4,7 @@
 #[allow(dead_code)]
 mod address_book;
 mod app;
+mod discovery;
 mod model;
 mod net;
 mod settings;

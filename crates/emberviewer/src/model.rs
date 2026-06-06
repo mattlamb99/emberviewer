@@ -201,17 +201,21 @@ impl TreeModel {
                     );
                 }
             }
-            Root::Streams(coll) => {
-                for entry in coll.0 {
-                    let se = entry.0;
-                    let Some(paths) = self.stream_index.get(&se.stream_identifier).cloned() else {
-                        continue;
-                    };
-                    for path in paths {
-                        if let Some(e) = self.entries.get_mut(&path) {
-                            e.value = Some(stream_value_for(e, &se.stream_value));
-                        }
-                    }
+            Root::Streams(coll) => self.apply_streams(coll.0),
+            Root::StreamsAlt(coll) => self.apply_streams(coll.0),
+        }
+    }
+
+    /// Route stream entries to their subscribed parameters.
+    fn apply_streams(&mut self, entries: Vec<glow::StreamEntryWrap>) {
+        for entry in entries {
+            let se = entry.0;
+            let Some(paths) = self.stream_index.get(&se.stream_identifier).cloned() else {
+                continue;
+            };
+            for path in paths {
+                if let Some(e) = self.entries.get_mut(&path) {
+                    e.value = Some(stream_value_for(e, &se.stream_value));
                 }
             }
         }

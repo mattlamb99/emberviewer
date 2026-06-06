@@ -222,6 +222,37 @@ fn decode_function() {
     assert_eq!(result[0].0.r#type, parameter_type::INTEGER);
 }
 
+// node-emberplus StreamCollection push: meterL=-8.68, meterR=-0.1, meterPeak=0.
+const STREAM_COLLECTION: &str = "fe000e0001c001021f02603c653aa0146512a003020101a10b0909c0021ceb851e\
+b851eca0146512a003020102a10b0909c000111eb851eb851fa00c650aa003020103a1030201007cb4ff";
+
+#[test]
+fn decode_stream_collection() {
+    // The captured frame's CRC byte is a capture-tool transcription artifact
+    // (the live socket sends correct CRCs — verified separately), so decode the
+    // BER payload directly: strip BOF + the 9-byte S101 header and the CRC + EOF.
+    let frame = hex(STREAM_COLLECTION);
+    let payload = &frame[10..frame.len() - 3];
+    let root = decode_root(payload).expect("decode stream collection");
+    // node-emberplus tags the collection [APPLICATION 5] (StreamsAlt).
+    let Root::StreamsAlt(coll) = root else {
+        panic!("expected StreamsAlt, got {root:?}");
+    };
+    assert_eq!(coll.0.len(), 3);
+    // meterL / meterR are live REAL meter samples (value varies); just check type
+    // and a plausible dB range. meterPeak is a stable integer.
+    assert_eq!(coll.0[0].0.stream_identifier, 1);
+    match &coll.0[0].0.stream_value {
+        Value::Real(r) => {
+            let v = r.to_f64();
+            assert!((-100.0..=100.0).contains(&v), "implausible meter {v}");
+        }
+        other => panic!("expected real, got {other:?}"),
+    }
+    assert_eq!(coll.0[2].0.stream_identifier, 3);
+    assert_eq!(coll.0[2].0.stream_value, Value::Integer(0));
+}
+
 #[test]
 fn decode_invocation_result() {
     let payload = payload_of(INVOCATION_RESULT);

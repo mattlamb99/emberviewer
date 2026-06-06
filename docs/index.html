@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>emberviewer — A free, cross-platform Ember+ viewer</title>
+  <meta name="description" content="emberviewer is a free, open-source, cross-platform desktop viewer for the Ember+ control protocol (Lawo) — a maintained replacement for the closed-source, Windows-only EmberPlusView.exe." />
+  <meta name="color-scheme" content="light dark" />
+  <!-- Inline SVG favicon (orange ember spark) — no external requests -->
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath fill='%23d9772b' d='M16 2c2 6-3 7-3 12a6 6 0 0 0 12 0c0-2-1-4-2-5 3 2 5 5 5 9a9 9 0 1 1-18 0c0-7 6-9 6-16z'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- ===================== Header ===================== -->
+  <header class="site">
+    <div class="wrap nav">
+      <a class="brand" href="#top" aria-label="emberviewer home">
+        <!-- Inline wordmark logo: ember spark over a node -->
+        <svg width="26" height="26" viewBox="0 0 32 32" role="img" aria-hidden="true">
+          <path fill="#d9772b" d="M16 2c2 6-3 7-3 12a6 6 0 0 0 12 0c0-2-1-4-2-5 3 2 5 5 5 9a9 9 0 1 1-18 0c0-7 6-9 6-16z"/>
+        </svg>
+        <span>emberviewer</span>
+      </a>
+      <span class="spacer"></span>
+      <a class="navlink hide-sm" href="#features">Features</a>
+      <a class="navlink hide-sm" href="#getting-started">Get started</a>
+      <a class="navlink" href="protocol.html">Docs</a>
+      <a class="navlink" href="https://github.com/m-l2/emberviewer">GitHub</a>
+    </div>
+  </header>
+
+  <a id="top"></a>
+
+  <!-- ===================== Hero ===================== -->
+  <div class="hero">
+    <div class="wrap">
+      <!-- Large logo wordmark -->
+      <svg class="logo-big" width="84" height="84" viewBox="0 0 32 32" role="img" aria-label="emberviewer logo">
+        <defs>
+          <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#ef9a4f"/>
+            <stop offset="1" stop-color="#d9772b"/>
+          </linearGradient>
+        </defs>
+        <circle cx="16" cy="16" r="15" fill="none" stroke="#d9772b" stroke-opacity="0.25" stroke-width="1.5"/>
+        <path fill="url(#g)" d="M16 3c2 6-3 7-3 12a6 6 0 0 0 12 0c0-2-1-4-2-5 3 2 5 5 5 9a9 9 0 1 1-18 0c0-7 6-9 6-16z"/>
+      </svg>
+      <h1>emberviewer</h1>
+      <p class="tagline">A free, cross-platform Ember+ viewer</p>
+      <p class="blurb">
+        Browse, monitor and control <strong>Ember+</strong> devices from one clean desktop app
+        on Windows, macOS and Linux. An open, maintained replacement for Lawo's closed-source
+        <code>EmberPlusView.exe</code>.
+      </p>
+      <div class="cta">
+        <a class="btn btn-primary" href="https://github.com/m-l2/emberviewer/releases">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 1a1 1 0 0 1 1 1v6.59l1.3-1.3a1 1 0 1 1 1.4 1.42l-3 3a1 1 0 0 1-1.4 0l-3-3a1 1 0 1 1 1.4-1.42L7 8.6V2a1 1 0 0 1 1-1ZM3 12a1 1 0 0 1 1 1v1h8v-1a1 1 0 1 1 2 0v2a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1v-2a1 1 0 0 1 1-1Z"/></svg>
+          Download
+        </a>
+        <a class="btn btn-ghost" href="https://github.com/m-l2/emberviewer">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="M8 0a8 8 0 0 0-2.53 15.59c.4.07.55-.17.55-.38v-1.3c-2.22.48-2.69-1.07-2.69-1.07-.36-.92-.89-1.17-.89-1.17-.72-.5.06-.49.06-.49.8.06 1.22.82 1.22.82.71 1.22 1.87.87 2.33.66.07-.52.28-.87.5-1.07-1.77-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.01.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 4 0c1.53-1.03 2.2-.82 2.2-.82.44 1.11.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48v2.2c0 .21.15.46.55.38A8 8 0 0 0 8 0Z"/></svg>
+          View on GitHub
+        </a>
+      </div>
+      <p class="note">Prebuilt binaries are published on the GitHub <strong>Releases</strong> page. Prefer source? See <a href="#getting-started">Getting started</a>.</p>
+    </div>
+  </div>
+
+  <!-- ===================== Why ===================== -->
+  <section id="why" class="alt">
+    <div class="wrap">
+      <p class="eyebrow">Why it exists</p>
+      <h2>The EmberPlusView replacement, finally open</h2>
+      <p class="lead">
+        For years <code>EmberPlusView.exe</code> has been the de-facto tool for poking at Ember+
+        devices — but it has real limitations. emberviewer rebuilds an equivalent from the
+        protocol up, in the open.
+      </p>
+      <div class="why-grid">
+        <div class="why-card">
+          <h3>Closed source</h3>
+          <p>The original viewer's source was never published, so it can't be fixed, audited or extended by the community.</p>
+        </div>
+        <div class="why-card">
+          <h3>Windows-only</h3>
+          <p>It ships as a Windows binary alone. emberviewer runs natively on Windows, macOS and Linux from a single codebase.</p>
+        </div>
+        <div class="why-card">
+          <h3>Unmaintained</h3>
+          <p>No updates since 2022. emberviewer is actively developed and MIT-licensed, so it can keep moving.</p>
+        </div>
+        <div class="why-card">
+          <h3>Built from the protocol up</h3>
+          <p>A clean Rust implementation of S101 framing and the Glow/BER schema — no closed dependencies, validated against live providers.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== Features ===================== -->
+  <section id="features">
+    <div class="wrap">
+      <p class="eyebrow">Features</p>
+      <h2>Everything you need to drive a provider</h2>
+      <p class="lead">A focused tool that gets out of your way — fast browsing, live values and real control.</p>
+
+      <p class="subhead">Available now</p>
+      <div class="feature-grid">
+        <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Address book</h3><p>Organise providers in folders with drag-and-drop, saved between sessions.</p></div></div>
+        <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>TCP connect</h3><p>Connect to any Ember+ provider over TCP (default port 9000).</p></div></div>
+        <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Lazy tree browsing</h3><p>Walk the provider tree on demand with <code>getDirectory</code>, expanding only what you open.</p></div></div>
+        <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>View &amp; set values</h3><p>Read parameter values and set them, with live subscriptions for changes.</p></div></div>
+        <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Boolean controls</h3><p>Dedicated set and pulse controls for boolean parameters.</p></div></div>
+        <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Matrix crosspoints</h3><p>View and toggle crosspoints on a matrix grid.</p></div></div>
+        <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Function invocation</h3><p>Call provider functions and inspect their results.</p></div></div>
+        <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Multiple connections</h3><p>Several simultaneous provider sessions, each in its own tab.</p></div></div>
+        <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Search &amp; filter</h3><p>Filter the tree, copy a node's path, and find what you need fast.</p></div></div>
+        <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Reconnect with backoff</h3><p>Automatic reconnection with exponential backoff when a link drops.</p></div></div>
+        <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Change logging</h3><p>A running log of parameter changes for monitoring and debugging.</p></div></div>
+        <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Options</h3><p>Startup mode, child ordering, descriptions, keep-alive interval and more.</p></div></div>
+      </div>
+
+      <p class="subhead">In progress</p>
+      <div class="feature-grid">
+        <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="2.5" fill="currentColor"/></svg></span><div><h3>Online / offline state</h3><p>Surfacing <code>isOnline</code> so disappearing nodes are handled gracefully.</p></div></div>
+        <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="2.5" fill="currentColor"/></svg></span><div><h3>Enum maps &amp; sliders</h3><p>Friendly enum labels and slider controls for ranged parameters.</p></div></div>
+        <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="2.5" fill="currentColor"/></svg></span><div><h3>Matrix labels</h3><p>Named source/target labels on crosspoint grids.</p></div></div>
+        <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="2.5" fill="currentColor"/></svg></span><div><h3>Streams &amp; meters</h3><p>High-rate streams for live meters and telemetry.</p></div></div>
+        <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="2.5" fill="currentColor"/></svg></span><div><h3>mDNS discovery</h3><p>Automatic discovery of providers on the local network.</p></div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== Screenshots ===================== -->
+  <section id="screenshots" class="alt">
+    <div class="wrap">
+      <p class="eyebrow">A look inside</p>
+      <h2>Screenshots</h2>
+      <p class="lead">The GUI is built with egui/eframe for a fast, native feel on every platform.</p>
+      <div class="shot">
+        <div>
+          <div class="ph-title">Screenshot coming soon</div>
+          <p>Address-book sidebar, lazy tree browser and a live value column.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== Getting started ===================== -->
+  <section id="getting-started">
+    <div class="wrap">
+      <p class="eyebrow">Getting started</p>
+      <h2>Run it in a couple of minutes</h2>
+      <p class="lead">
+        Prebuilt binaries will be on the
+        <a href="https://github.com/m-l2/emberviewer/releases">Releases</a> page. To build from
+        source you only need a Rust toolchain.
+      </p>
+      <div class="steps">
+        <div class="step">
+          <div class="num">1</div>
+          <div>
+            <h3>Install Rust</h3>
+            <p>Grab the toolchain from <a href="https://rustup.rs">rustup.rs</a> if you don't have it.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div class="num">2</div>
+          <div>
+            <h3>Clone the repository</h3>
+            <pre><code>git clone https://github.com/m-l2/emberviewer
+cd emberviewer</code></pre>
+          </div>
+        </div>
+        <div class="step">
+          <div class="num">3</div>
+          <div>
+            <h3>Build a release binary</h3>
+            <pre><code>cargo build --release</code></pre>
+            <p>The app lands in <code>target/release/</code>. Run it with <code>cargo run --release -p emberviewer</code>.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div class="num">4</div>
+          <div>
+            <h3>Connect to a provider</h3>
+            <p>Add a provider to the address book by its host and port (Ember+ defaults to <code>9000</code>), then connect and browse. New to Ember+? Read the <a href="protocol.html">protocol primer</a>.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== Docs callout ===================== -->
+  <section id="docs" class="alt">
+    <div class="wrap">
+      <div class="callout">
+        <span class="dot" style="width:46px;height:46px;border-radius:12px;background:var(--ember-soft);display:grid;place-items:center;flex:none">
+          <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="#d9772b" d="M5 3h9l5 5v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Zm8 1.5V8h3.5L13 4.5ZM7 11h10v1.5H7V11Zm0 3.5h10V16H7v-1.5Zm0 3.5h7v1.5H7V18Z"/></svg>
+        </span>
+        <div class="txt">
+          <h3>New to Ember+?</h3>
+          <p>A short primer on what Ember+ is — providers, the tree of nodes, parameters, matrices and functions, and how getDirectory / set / subscribe work.</p>
+        </div>
+        <a class="btn btn-ghost" href="protocol.html">Read the primer</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== Footer ===================== -->
+  <footer class="site">
+    <div class="wrap frow">
+      <div>
+        <strong>emberviewer</strong> — MIT licensed. Built in Rust.
+        <br />Ember+ is a control protocol by <a href="https://github.com/Lawo/ember-plus">Lawo</a>; this project is not affiliated with Lawo.
+      </div>
+      <div class="links">
+        <a href="https://github.com/m-l2/emberviewer">GitHub</a>
+        <a href="https://github.com/m-l2/emberviewer/releases">Releases</a>
+        <a href="protocol.html">Docs</a>
+        <a href="#top">Back to top</a>
+      </div>
+    </div>
+  </footer>
+
+</body>
+</html>

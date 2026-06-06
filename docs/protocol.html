@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Ember+ primer — emberviewer docs</title>
+  <meta name="description" content="A concise primer on the Ember+ control protocol and how emberviewer maps to it: providers, the tree of nodes, parameters, matrices and functions, and getDirectory / set / subscribe." />
+  <meta name="color-scheme" content="light dark" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath fill='%23d9772b' d='M16 2c2 6-3 7-3 12a6 6 0 0 0 12 0c0-2-1-4-2-5 3 2 5 5 5 9a9 9 0 1 1-18 0c0-7 6-9 6-16z'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="style.css" />
+  <style>
+    .doc { padding: 48px 0 72px; }
+    .doc h1 { font-size: clamp(30px, 5vw, 42px); margin: 8px 0 8px; letter-spacing: -0.02em; }
+    .doc h2 { font-size: 24px; margin: 40px 0 10px; letter-spacing: -0.01em; }
+    .doc h3 { font-size: 18px; margin: 24px 0 6px; }
+    .doc p, .doc li { color: var(--text); }
+    .doc .muted { color: var(--text-muted); }
+    .doc ul { padding-left: 22px; }
+    .doc li { margin: 4px 0; }
+    .tree {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 16px 18px; font-size: 14px; line-height: 1.7;
+    }
+    .doc .back { font-size: 14px; }
+    .term { display: grid; grid-template-columns: 160px 1fr; gap: 4px 18px; margin: 14px 0; }
+    .term dt { font-weight: 700; }
+    .term dd { margin: 0 0 8px; color: var(--text-muted); }
+    @media (max-width: 560px) { .term { grid-template-columns: 1fr; } .term dd { margin-bottom: 14px; } }
+  </style>
+</head>
+<body>
+
+  <header class="site">
+    <div class="wrap nav">
+      <a class="brand" href="index.html" aria-label="emberviewer home">
+        <svg width="26" height="26" viewBox="0 0 32 32" role="img" aria-hidden="true">
+          <path fill="#d9772b" d="M16 2c2 6-3 7-3 12a6 6 0 0 0 12 0c0-2-1-4-2-5 3 2 5 5 5 9a9 9 0 1 1-18 0c0-7 6-9 6-16z"/>
+        </svg>
+        <span>emberviewer</span>
+      </a>
+      <span class="spacer"></span>
+      <a class="navlink" href="index.html">Home</a>
+      <a class="navlink" href="index.html#features">Features</a>
+      <a class="navlink" href="https://github.com/m-l2/emberviewer">GitHub</a>
+    </div>
+  </header>
+
+  <div class="wrap doc">
+    <p class="eyebrow">Documentation</p>
+    <h1>An Ember+ primer</h1>
+    <p class="muted">What Ember+ is, the shape of its data, and how emberviewer maps onto it. No prior experience required.</p>
+
+    <h2>What is Ember+?</h2>
+    <p>
+      <strong>Ember+</strong> is an open control protocol from <a href="https://github.com/Lawo/ember-plus">Lawo</a>,
+      widely used in broadcast and pro-audio gear to expose and control device parameters over the network.
+      A device (or software) that publishes controllable data is a <strong>provider</strong>; a tool that
+      connects to it — like emberviewer — is a <strong>consumer</strong>.
+    </p>
+    <p>
+      Under the hood it is three nested layers over a single TCP connection (default port <code>9000</code>):
+    </p>
+    <pre><code>TCP  →  S101 frames  →  BER (TLV)  →  Glow tree</code></pre>
+    <ul>
+      <li><strong>S101</strong> is the framing layer: packet boundaries, byte escaping, a CRC-16 checksum, and keep-alive.</li>
+      <li><strong>BER</strong> (the ASN.1 Basic Encoding Rules) encodes each message as nested tag/length/value bytes.</li>
+      <li><strong>Glow</strong> is the Ember+ schema carried inside that BER: the actual tree of nodes, parameters, matrices and functions.</li>
+    </ul>
+    <p class="muted">emberviewer implements all three from scratch in Rust (the <code>ember-proto</code> and <code>ember-net</code> crates), so there is nothing closed in the stack.</p>
+
+    <h2>The provider tree</h2>
+    <p>
+      A provider exposes its data as a <strong>tree</strong>. Every element sits at a numeric path such as
+      <code>0.1.3</code> (encoded on the wire as a <code>RELATIVE-OID</code>). The element types you'll meet:
+    </p>
+    <dl class="term">
+      <dt>Node</dt>
+      <dd>A branch in the tree — a container that groups other elements. Has an identifier and an optional description.</dd>
+      <dt>Parameter</dt>
+      <dd>A single value: integer, real, string, boolean or enumeration. May be read-only or read/write, and can carry min/max, units, an enum map and more.</dd>
+      <dt>Matrix</dt>
+      <dd>A routing grid of sources × targets. Connections (crosspoints) are made by tying a target to one or more sources.</dd>
+      <dt>Function</dt>
+      <dd>A callable operation with typed arguments and results — invoke it to make the provider do something and return a value.</dd>
+      <dt>Stream</dt>
+      <dd>A high-rate value channel, typically used for audio meters and other live telemetry.</dd>
+    </dl>
+
+    <p>A small tree, as emberviewer shows it:</p>
+    <div class="tree">
+0&nbsp;&nbsp;[node]&nbsp;EmberViewerTestProvider<br/>
+&nbsp;&nbsp;0.1&nbsp;&nbsp;[node]&nbsp;parameters<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;0.1.0&nbsp;&nbsp;intParam&nbsp;=&nbsp;42&nbsp;(rw)<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;0.1.1&nbsp;&nbsp;realParam&nbsp;=&nbsp;3.141590&nbsp;(ro)<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;0.1.4&nbsp;&nbsp;enumParam&nbsp;=&nbsp;1&nbsp;(rw)
+    </div>
+
+    <h2>How emberviewer talks to a provider</h2>
+    <p>Three operations cover almost everything emberviewer does:</p>
+
+    <h3>getDirectory — browse</h3>
+    <p>
+      You never download the whole tree at once. emberviewer sends a <strong>getDirectory</strong> request for the
+      children of a node, and the provider replies with that node's immediate children. Expanding a branch in the
+      UI issues another <code>getDirectory</code> for it — this is the "lazy" browsing you see in the tree.
+    </p>
+
+    <h3>set — control</h3>
+    <p>
+      To change a writable parameter, emberviewer sends a <strong>set</strong> with the new value at that parameter's
+      path. Booleans get dedicated set and <em>pulse</em> controls; other types are edited inline. The provider applies
+      the change and reports the result back.
+    </p>
+
+    <h3>subscribe — watch live</h3>
+    <p>
+      Rather than polling, a consumer <strong>subscribes</strong> to a parameter and the provider pushes updates whenever
+      the value changes. emberviewer subscribes to what you're viewing so the value column stays live, and records changes
+      in the change log.
+    </p>
+
+    <h2>Mapping at a glance</h2>
+    <ul>
+      <li><strong>Address book entry</strong> → a provider's host + port.</li>
+      <li><strong>Tree row</strong> → a Glow node, parameter, matrix or function at a numeric path.</li>
+      <li><strong>Expanding a branch</strong> → a <code>getDirectory</code> for that node's children.</li>
+      <li><strong>Editing a value / toggling a crosspoint</strong> → a <code>set</code>.</li>
+      <li><strong>The live value column &amp; change log</strong> → active <code>subscribe</code>s.</li>
+      <li><strong>"Invoke" on a function</strong> → an Ember+ function invocation with its arguments.</li>
+    </ul>
+
+    <h2>Where to go next</h2>
+    <ul>
+      <li>Lawo's reference implementation and spec discussion: <a href="https://github.com/Lawo/ember-plus">github.com/Lawo/ember-plus</a>.</li>
+      <li>Try emberviewer against the bundled test provider — see <a href="index.html#getting-started">Getting started</a>.</li>
+    </ul>
+
+    <p class="back" style="margin-top:32px"><a href="index.html">&larr; Back to home</a></p>
+  </div>
+
+  <footer class="site">
+    <div class="wrap frow">
+      <div>
+        <strong>emberviewer</strong> — MIT licensed. Built in Rust.
+        <br />Ember+ is a control protocol by <a href="https://github.com/Lawo/ember-plus">Lawo</a>; this project is not affiliated with Lawo.
+      </div>
+      <div class="links">
+        <a href="index.html">Home</a>
+        <a href="https://github.com/m-l2/emberviewer">GitHub</a>
+      </div>
+    </div>
+  </footer>
+
+</body>
+</html>

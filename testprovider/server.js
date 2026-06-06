@@ -5,7 +5,7 @@
 //
 // Usage: node server.js
 const { EmberServer, EmberServerEvent, EmberLib } = require('node-emberplus');
-const { ParameterType, FunctionArgument } = EmberLib;
+const { ParameterType, FunctionArgument, TreeNode, StreamCollection, StreamEntry } = EmberLib;
 
 const HOST = '0.0.0.0';
 //const HOST = '127.0.0.1';
@@ -99,7 +99,132 @@ const jsonTree = [
                 ],
             },
             {
+                // path "0.4"  -- "interop" node exercising client features:
+                //   enumMap, tilde-hidden enumeration, sliders (int/real),
+                //   isOnline (offline node + param), and streamed meters.
+                // Explicit number:4 keeps it at 0.4 even though it appears
+                // before functions (0.3) in this array.
+                number: 4,
+                identifier: 'interop',
+                children: [
+                    {
+                        // 0.4.0 -- integer parameter with a SPARSE enumMap.
+                        // enumMap maps display name -> integer value with
+                        // non-contiguous keys (0, 10, 20). Parser expects an
+                        // array of {key, value}. Encoded as [15] enumMap ->
+                        // StringIntegerCollection [APP 8] of StringIntegerPair
+                        // [APP 7] (entryString [0] + entryInteger [1]).
+                        identifier: 'enumMapParam',
+                        type: 'integer',
+                        value: 10,
+                        access: 'readWrite',
+                        enumMap: [
+                            { key: 'Off', value: 0 },
+                            { key: 'Low', value: 10 },
+                            { key: 'High', value: 20 },
+                        ],
+                    },
+                    {
+                        // 0.4.1 -- enumeration string with a ~-prefixed entry
+                        // to hide index 1 ("Reserved"). Indices 0,1,2 present,
+                        // index 1 hidden. Encoded as [7] enumeration string.
+                        identifier: 'tildeEnumParam',
+                        type: 'enum',
+                        value: 0,
+                        access: 'readWrite',
+                        enumeration: 'Red\n~Reserved\nBlue',
+                    },
+                    {
+                        // 0.4.2 -- integer "gain" slider with min/max, a format
+                        // string and a factor. minimum [3], maximum [4],
+                        // format [6], factor [8].
+                        identifier: 'gainSlider',
+                        type: 'integer',
+                        value: 0,
+                        minimum: -60,
+                        maximum: 12,
+                        format: '%d dB',
+                        factor: 1,
+                        access: 'readWrite',
+                    },
+                    {
+                        // 0.4.3 -- real "level" slider, min 0.0 max 1.0.
+                        identifier: 'levelSlider',
+                        type: 'real',
+                        value: 0.5,
+                        minimum: 0.0,
+                        maximum: 1.0,
+                        access: 'readWrite',
+                    },
+                    {
+                        // 0.4.4 -- offline NODE (isOnline=false). NodeContents
+                        // encodes isOnline at [3]. Has one child param so the
+                        // client can see contents under an offline node.
+                        identifier: 'offlineNode',
+                        isOnline: false,
+                        children: [
+                            {
+                                identifier: 'childParam',
+                                type: 'string',
+                                value: 'under offline node',
+                                access: 'read',
+                            },
+                        ],
+                    },
+                    {
+                        // 0.4.5 -- offline PARAMETER (isOnline=false).
+                        // ParameterContents encodes isOnline at [9].
+                        identifier: 'offlineParam',
+                        type: 'integer',
+                        value: 7,
+                        isOnline: false,
+                        access: 'read',
+                    },
+                    {
+                        // 0.4.6 -- "meters" node holding streamed parameters.
+                        // Each meter parameter carries a streamIdentifier [14];
+                        // its live value is delivered out-of-band via a
+                        // StreamCollection (see pushStreams() below) rather than
+                        // the parameter's own [2] value.
+                        identifier: 'meters',
+                        children: [
+                            {
+                                // 0.4.6.0 -- real meter, streamIdentifier 1
+                                identifier: 'meterL',
+                                type: 'real',
+                                value: 0.0,
+                                minimum: -60.0,
+                                maximum: 0.0,
+                                access: 'read',
+                                streamIdentifier: 1,
+                            },
+                            {
+                                // 0.4.6.1 -- real meter, streamIdentifier 2
+                                identifier: 'meterR',
+                                type: 'real',
+                                value: 0.0,
+                                minimum: -60.0,
+                                maximum: 0.0,
+                                access: 'read',
+                                streamIdentifier: 2,
+                            },
+                            {
+                                // 0.4.6.2 -- integer meter, streamIdentifier 3
+                                identifier: 'meterPeak',
+                                type: 'integer',
+                                value: 0,
+                                minimum: -60,
+                                maximum: 0,
+                                access: 'read',
+                                streamIdentifier: 3,
+                            },
+                        ],
+                    },
+                ],
+            },
+            {
                 // path "0.3"  -- a node containing a real, invocable Function
+                number: 3,
                 identifier: 'functions',
                 children: [
                     {
@@ -148,10 +273,111 @@ server.on(EmberServerEvent.VALUE_CHANGE, (node) => {
     }
 });
 
+// ---------------------------------------------------------------------------
+// Stream pushing.
+//
+// node-emberplus has NO public "broadcast a StreamCollection" API, but a root
+// TreeNode encodes its attached StreamCollection (TreeNode.setStreams +
+// TreeNode.encode), and each connected client socket exposes queueMessage(node)
+// which BER-encodes and frames a TreeNode over S101. So we build a bare root
+// TreeNode, attach a StreamCollection of StreamEntry (streamIdentifier ->
+// streamValue), and queue it to every connected client a few times a second.
+//
+// The meter parameters (0.4.6.x) carry streamIdentifier 1/2/3; their live
+// values arrive here out-of-band rather than via the parameters' own values.
+//
+// NOTE: in node-emberplus, StreamCollection.BERID and StreamEntry.BERID are
+// BOTH ber.APPLICATION(5) (the library does not use APP 6 for the collection).
+// Each StreamEntry encodes streamIdentifier at CONTEXT(0) and streamValue at
+// CONTEXT(1).
+let streamPhase = 0;
+function buildStreamCollection() {
+    const sc = new StreamCollection();
+    streamPhase += 0.3;
+    // meterL (id 1) and meterR (id 2): real dBFS-ish values that sweep.
+    const l = Math.round((-30 + 30 * Math.abs(Math.sin(streamPhase))) * 100) / 100;
+    const r = Math.round((-30 + 30 * Math.abs(Math.sin(streamPhase + 0.7))) * 100) / 100;
+    // meterPeak (id 3): integer peak hold.
+    const peak = Math.round(Math.max(l, r));
+    sc.addEntry(new StreamEntry(1, l));
+    sc.addEntry(new StreamEntry(2, r));
+    sc.addEntry(new StreamEntry(3, peak));
+    return sc;
+}
+
+function pushStreams() {
+    let clients;
+    try {
+        clients = server.clients; // Set<S101Socket> (not a documented API)
+    } catch (e) {
+        return;
+    }
+    if (clients == null || clients.size === 0) {
+        return;
+    }
+    const sc = buildStreamCollection();
+    const root = new TreeNode();
+    root.setStreams(sc);
+    for (const client of clients) {
+        try {
+            if (client.isConnected && client.isConnected()) {
+                client.queueMessage(root);
+            }
+        } catch (e) {
+            console.log('stream push error', e && e.message);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// isOnline toggling.
+//
+// Flip the offline node (0.4.4) and offline parameter (0.4.5) between
+// online/offline every ~10s so the client can observe state changes, then
+// push the updated subtree to subscribers via the server's setValue path is
+// not applicable (no value change); instead we re-send the element. We use the
+// server's createResponse via setValue-style update by toggling isOnline on
+// the contents and queueing a getDirectory-style response to all clients.
+let onlineState = false;
+function toggleOnline() {
+    onlineState = !onlineState;
+    const targets = ['0.4.4', '0.4.5'];
+    for (const p of targets) {
+        const el = server.tree.getElementByPath(p);
+        if (el == null || el.contents == null) {
+            continue;
+        }
+        el.contents.isOnline = onlineState;
+        // Re-encode just this element (with its updated contents) to all
+        // clients so they observe the online/offline change. getDuplicate()
+        // copies the element's contents onto a minimal node; getTreeBranch
+        // wraps it back up to a root so it encodes as a valid response.
+        try {
+            const dup = el.getDuplicate();
+            // Wrap dup (the element + its contents) up through its parent to a
+            // root element so it encodes as a proper qualified response.
+            const parent = el.getParent ? el.getParent() : null;
+            const resp = parent != null ? parent.getTreeBranch(dup) : dup;
+            for (const client of server.clients) {
+                if (client.isConnected && client.isConnected()) {
+                    client.queueMessage(resp);
+                }
+            }
+        } catch (e) {
+            // best effort; ignore if the helper isn't available.
+        }
+    }
+    console.log('isOnline toggled ->', onlineState, 'for', targets.join(', '));
+}
+
 server
     .listen()
     .then(() => {
         console.log(`Ember+ provider listening on ${HOST}:${PORT}`);
+        // Push stream meter frames ~5x/second.
+        setInterval(pushStreams, 200);
+        // Toggle the offline node/param every 10s.
+        setInterval(toggleOnline, 10000);
     })
     .catch((e) => {
         console.log(e.stack);

@@ -15,7 +15,7 @@ single Rust codebase.
 `EmberPlusView.exe` is the de-facto tool for poking at Ember+ devices, but its source was
 never published ([Lawo/ember-plus#59](https://github.com/Lawo/ember-plus/issues/59)), it ships
 Windows-binary-only, and it hasn't been updated since 2022. This project reimplements an
-equivalent, cross-platform, from the protocol up.
+equivalent, cross-platform, from the protocol up, with a few new features I was longing for.
 
 ## Architecture
 

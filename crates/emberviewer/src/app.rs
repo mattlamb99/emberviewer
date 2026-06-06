@@ -122,6 +122,9 @@ pub struct App {
     /// Change-log buffer (newest last).
     log: Vec<LogEntry>,
     show_log: bool,
+    /// Active mDNS discovery, if running.
+    discovery: Option<crate::discovery::Discovery>,
+    show_discovery: bool,
 }
 
 impl App {
@@ -146,6 +149,8 @@ impl App {
             show_options: false,
             log: Vec::new(),
             show_log: false,
+            discovery: None,
+            show_discovery: false,
         };
         app.apply_startup_mode(&cc.egui_ctx.clone());
         app
@@ -337,6 +342,7 @@ impl eframe::App for App {
         let ctx = ui.ctx().clone();
         self.pump_network();
         self.process_pulses(&ctx);
+        self.poll_discovery(&ctx);
 
         egui::TopBottomPanel::top("menubar").show_inside(ui, |ui| {
             ui.horizontal(|ui| {
@@ -350,6 +356,13 @@ impl eframe::App for App {
                 {
                     self.show_log = !self.show_log;
                 }
+                if ui
+                    .selectable_label(self.show_discovery, "Discover")
+                    .on_hover_text("Find Ember+ providers on the network (mDNS)")
+                    .clicked()
+                {
+                    self.toggle_discovery();
+                }
             });
         });
 
@@ -357,6 +370,7 @@ impl eframe::App for App {
         self.add_dialog(&ctx);
         self.folder_dialog(&ctx);
         self.options_window(&ctx);
+        self.discovery_window(&ctx);
         self.tabs(ui);
 
         egui::TopBottomPanel::bottom("status").show_inside(ui, |ui| {
@@ -898,6 +912,83 @@ impl App {
                 self.status_line = format!("could not save settings: {e}");
             }
         }
+    }
+
+    fn toggle_discovery(&mut self) {
+        if self.discovery.is_some() {
+            self.discovery = None;
+            self.show_discovery = false;
+        } else {
+            match crate::discovery::Discovery::start() {
+                Ok(d) => {
+                    self.discovery = Some(d);
+                    self.show_discovery = true;
+                }
+                Err(e) => self.status_line = format!("discovery failed: {e}"),
+            }
+        }
+    }
+
+    /// Drain mDNS events and keep the UI repainting while browsing.
+    fn poll_discovery(&mut self, ctx: &egui::Context) {
+        if let Some(d) = &mut self.discovery {
+            d.poll();
+            ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        }
+    }
+
+    fn discovery_window(&mut self, ctx: &egui::Context) {
+        if !self.show_discovery {
+            return;
+        }
+        let mut open = self.show_discovery;
+        let mut to_add: Option<crate::discovery::Discovered> = None;
+        egui::Window::new("Discover providers (mDNS)")
+            .open(&mut open)
+            .default_width(360.0)
+            .show(ctx, |ui| {
+                let found = self.discovery.as_ref().map(|d| d.sorted()).unwrap_or_default();
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(format!("Browsing _ember._tcp … {} found", found.len()));
+                });
+                ui.separator();
+                if found.is_empty() {
+                    ui.weak("No providers found yet. Ensure they're on this network.");
+                }
+                egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+                    for d in &found {
+                        ui.horizontal(|ui| {
+                            let exists = self.book_has_host(&d.host, d.port);
+                            if ui
+                                .add_enabled(!exists, egui::Button::new("Add"))
+                                .on_hover_text(if exists { "already in address book" } else { "" })
+                                .clicked()
+                            {
+                                to_add = Some(d.clone());
+                            }
+                            ui.label(format!("{}  ", d.display_name()));
+                            ui.weak(format!("{}:{}", d.host, d.port));
+                        });
+                    }
+                });
+            });
+        self.show_discovery = open;
+        if !open {
+            self.discovery = None;
+        }
+        if let Some(d) = to_add {
+            self.book
+                .add_provider(AddressBook::ROOT_ID, d.display_name(), d.host, d.port, None);
+            let _ = self.book.save();
+        }
+    }
+
+    /// Whether a provider with this host:port already exists in the book.
+    fn book_has_host(&self, host: &str, port: u16) -> bool {
+        self.book.iter().any(|(_, n)| {
+            matches!(n, Node::Provider(p) if p.host == host && p.port == port)
+        })
     }
 
     /// One tab per open connection, with status dot and a close button.

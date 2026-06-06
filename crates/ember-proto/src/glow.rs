@@ -840,6 +840,12 @@ pub struct StreamEntry {
 #[rasn(delegate, tag(application, 6))]
 pub struct StreamCollection(pub Vec<StreamEntryWrap>);
 
+/// node-emberplus encodes the stream collection with the StreamEntry tag
+/// (`[APPLICATION 5]`) instead of the spec's `[APPLICATION 6]`; accept both.
+#[derive(AsnType, Decode, Encode, Debug, Clone, PartialEq)]
+#[rasn(delegate, tag(application, 5))]
+pub struct StreamCollectionAlt(pub Vec<StreamEntryWrap>);
+
 /// `InvocationResult ::= [APPLICATION 23] IMPLICIT SEQUENCE` (subset).
 #[derive(AsnType, Decode, Encode, Debug, Clone, PartialEq)]
 #[rasn(tag(application, 23))]
@@ -861,6 +867,8 @@ pub struct InvocationResult {
 pub enum Root {
     Elements(RootElementCollection),
     Streams(StreamCollection),
+    /// node-emberplus' non-standard `[APPLICATION 5]` stream collection.
+    StreamsAlt(StreamCollectionAlt),
     InvocationResult(InvocationResult),
 }
 
