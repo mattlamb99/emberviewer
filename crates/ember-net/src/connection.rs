@@ -132,8 +132,13 @@ impl Connection {
 /// Something received from the provider on the read half.
 #[derive(Debug)]
 pub enum Inbound {
-    /// One or more decoded Glow documents from a single message.
-    Documents(Vec<Root>),
+    /// One or more decoded Glow documents from a single message, alongside the
+    /// original BER payload they were decoded from. The raw bytes are kept so a
+    /// consumer (the server) can forward them verbatim to a remote viewer, which
+    /// then decodes byte-identically — re-encoding `roots` would risk a lossy or
+    /// asymmetric result for vendor extensions the tolerant decoder preserves but
+    /// the encoder can't reproduce exactly.
+    Documents { roots: Vec<Root>, raw: Vec<u8> },
     /// The provider asked us to keep the connection alive; reply via the writer.
     KeepAliveRequest,
 }
@@ -200,7 +205,10 @@ impl ProviderReader {
                             }
                         }
                         if !roots.is_empty() {
-                            return Ok(Some(Inbound::Documents(roots)));
+                            return Ok(Some(Inbound::Documents {
+                                roots,
+                                raw: payload,
+                            }));
                         }
                         // Nothing decoded — keep reading.
                     }

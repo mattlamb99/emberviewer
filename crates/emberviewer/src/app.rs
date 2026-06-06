@@ -6,13 +6,21 @@
 #![allow(deprecated)]
 
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 
 use ember_proto::glow::{self, Value};
+use ember_web_proto::{WireNode, WireProvider};
 
 use crate::address_book::{AddressBook, Id, Node, DEFAULT_PORT};
+use crate::hub::HubRegistry;
 use crate::model::{format_value, TreeModel};
 use crate::net::{ConnectionHandle, NetCommand, NetEvent};
+use crate::server::{self, ServerHandle};
 use crate::settings::{OrderBy, Settings, StartupMode};
+use crate::widgets::{
+    display_value, draw_vmeter, format_suffix, is_meterable, meter_range, meter_readout,
+    render_function, value_f64,
+};
 
 /// State for one open provider connection.
 struct Session {
@@ -145,6 +153,12 @@ pub struct App {
     /// Theme currently applied to the egui context (`None` until the first frame
     /// applies it). Re-applied whenever it differs from `settings.dark_mode`.
     applied_dark: Option<bool>,
+    /// Shared per-provider connections (desktop + web viewers).
+    hubs: HubRegistry,
+    /// Provider list exposed to the web server (kept in sync with the book).
+    catalog: server::Catalog,
+    /// Running web server, when server mode is enabled.
+    server: Option<ServerHandle>,
 }
 
 /// The project's warm-orange brand accent.
@@ -167,6 +181,76 @@ fn apply_theme(ctx: &egui::Context, dark: bool) {
     ctx.set_visuals(visuals);
 }
 
+/// A random hex access token for server mode.
+fn generate_token() -> String {
+    let bytes: [u8; 16] = rand::random();
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Non-loopback IPv4 interfaces as `(name, ip)`, for the bind dropdown.
+fn list_nics() -> Vec<(String, std::net::Ipv4Addr)> {
+    let mut out = Vec::new();
+    if let Ok(ifaces) = if_addrs::get_if_addrs() {
+        for i in ifaces {
+            if i.is_loopback() {
+                continue;
+            }
+            if let std::net::IpAddr::V4(v4) = i.ip() {
+                out.push((i.name.clone(), v4));
+            }
+        }
+    }
+    out
+}
+
+/// A concrete IP to advertise in the URL/QR: the bound IP if specific, else the
+/// first non-loopback interface.
+fn display_ip(bind: &str, nics: &[(String, std::net::Ipv4Addr)]) -> Option<std::net::Ipv4Addr> {
+    if let Ok(v4) = bind.parse::<std::net::Ipv4Addr>() {
+        if !v4.is_unspecified() {
+            return Some(v4);
+        }
+    }
+    nics.first().map(|(_, ip)| *ip)
+}
+
+/// The browser URL for the web UI (token included unless open-LAN).
+fn web_url(ip: std::net::Ipv4Addr, port: u16, token: &str, open_lan: bool) -> String {
+    if open_lan {
+        format!("http://{ip}:{port}/")
+    } else {
+        format!("http://{ip}:{port}/?token={token}")
+    }
+}
+
+/// Paint a QR code of `data` (4px modules, with a quiet zone).
+fn draw_qr(ui: &mut egui::Ui, data: &str) {
+    let Ok(code) = qrcode::QrCode::new(data.as_bytes()) else {
+        return;
+    };
+    let width = code.width();
+    let colors = code.to_colors();
+    let module = 4.0_f32;
+    let quiet = 4.0_f32;
+    let side = (width as f32 + 2.0 * quiet) * module;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::hover());
+    let painter = ui.painter();
+    painter.rect_filled(rect, 2.0, egui::Color32::WHITE);
+    for y in 0..width {
+        for x in 0..width {
+            if colors[y * width + x] == qrcode::Color::Dark {
+                let px = rect.min.x + (quiet + x as f32) * module;
+                let py = rect.min.y + (quiet + y as f32) * module;
+                painter.rect_filled(
+                    egui::Rect::from_min_size(egui::pos2(px, py), egui::vec2(module, module)),
+                    0.0,
+                    egui::Color32::BLACK,
+                );
+            }
+        }
+    }
+}
+
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let rt = tokio::runtime::Builder::new_multi_thread()
@@ -176,6 +260,7 @@ impl App {
             .expect("tokio runtime");
         let book = AddressBook::load().unwrap_or_default();
         let settings = Settings::load();
+        let hubs = HubRegistry::new(rt.handle().clone(), cc.egui_ctx.clone());
         let mut app = App {
             rt,
             book,
@@ -193,10 +278,14 @@ impl App {
             show_discovery: false,
             show_about: false,
             applied_dark: None,
+            hubs,
+            catalog: Arc::new(Mutex::new(server::CatalogData::default())),
+            server: None,
         };
         // The theme is applied from within `ui()` (eframe overrides visuals set
         // here during construction, which is why the startup theme didn't stick).
         app.apply_startup_mode(&cc.egui_ctx.clone());
+        app.sync_server(); // resume server mode if it was enabled at last shutdown
         app
     }
 
@@ -241,28 +330,23 @@ impl App {
         }
     }
 
-    /// Close a session: ask the task to stop and drop its state.
+    /// Close a session: drop the desktop's view. The shared connection stays up
+    /// only if a web client is still viewing it.
     fn disconnect(&mut self, id: Id) {
-        if let Some(session) = self.sessions.remove(&id) {
-            session.handle.send(NetCommand::Disconnect);
-        }
+        self.sessions.remove(&id);
         if self.active == Some(id) {
             self.active = self.sessions.keys().copied().next();
         }
         self.remember_session();
     }
 
-    fn connect(&mut self, id: Id, ctx: &egui::Context) {
+    fn connect(&mut self, id: Id, _ctx: &egui::Context) {
         let Some(provider) = self.book.find_provider(id).cloned() else {
             return;
         };
         let addr = format!("{}:{}", provider.host, provider.port);
-        let handle = ConnectionHandle::spawn(
-            self.rt.handle(),
-            addr.clone(),
-            ctx.clone(),
-            self.settings.send_keepalive,
-        );
+        let handle =
+            ConnectionHandle::open(&self.hubs, id, addr.clone(), self.settings.send_keepalive);
         self.sessions.insert(
             id,
             Session {
@@ -291,6 +375,78 @@ impl App {
         self.remember_session();
     }
 
+    /// Rebuild the catalog the web server exposes from the address book: the flat
+    /// provider list (for id→addr lookup) and the folder tree (for the left pane).
+    fn refresh_catalog(&self) {
+        let providers: Vec<WireProvider> = self
+            .book
+            .iter()
+            .filter_map(|(_, n)| match n {
+                Node::Provider(p) => Some(WireProvider {
+                    id: p.id,
+                    name: p.name.clone(),
+                    host: p.host.clone(),
+                    port: p.port,
+                }),
+                Node::Folder(_) => None,
+            })
+            .collect();
+        let tree: Vec<WireNode> = self.book.root().children.iter().map(node_to_wire).collect();
+        let mut c = self.catalog.lock().unwrap();
+        c.providers = providers;
+        c.tree = tree;
+    }
+
+    /// Start or stop the web server to match `settings.server_enabled`.
+    fn sync_server(&mut self) {
+        match (self.settings.server_enabled, self.server.is_some()) {
+            (true, false) => {
+                if self.settings.server_token.trim().is_empty() && !self.settings.server_open_lan {
+                    self.settings.server_token = generate_token();
+                    let _ = self.settings.save();
+                }
+                self.refresh_catalog();
+                let cfg = server::ServerConfig {
+                    port: self.settings.server_port,
+                    bind: self.settings.server_bind.clone(),
+                    token: self.settings.server_token.clone(),
+                    open_lan: self.settings.server_open_lan,
+                    read_only: self.settings.server_read_only,
+                    keepalive: self.settings.send_keepalive,
+                };
+                match server::start(
+                    self.rt.handle(),
+                    self.hubs.clone(),
+                    self.catalog.clone(),
+                    cfg,
+                ) {
+                    Ok(h) => {
+                        self.status_line = format!("server listening on port {}", h.bound.port());
+                        self.server = Some(h);
+                    }
+                    Err(e) => {
+                        self.status_line = format!("server failed to start: {e}");
+                        self.settings.server_enabled = false;
+                        let _ = self.settings.save();
+                    }
+                }
+            }
+            (false, true) => {
+                self.server = None; // drop → graceful shutdown
+                self.status_line = "server stopped".into();
+            }
+            _ => {}
+        }
+    }
+
+    /// Restart the server (after a config change) if it is running.
+    fn restart_server(&mut self) {
+        if self.server.is_some() {
+            self.server = None;
+            self.sync_server();
+        }
+    }
+
     /// Drain network events for every session and apply them to the model.
     fn pump_network(&mut self) {
         let clear_on_disconnect = self.settings.clear_tree_on_disconnect;
@@ -301,21 +457,24 @@ impl App {
                 match event {
                     NetEvent::Connected => {
                         session.status = Status::Connected;
-                        // (Re)establish: refetch every expanded node and
-                        // re-subscribe visible params on the new connection.
+                        // Re-fetch every expanded node on the new connection. The
+                        // hub re-subscribes active paths itself, so we keep our
+                        // `subscribed` set intact (clearing it would desync the
+                        // ref-counts and leave orphaned device subscriptions).
                         for e in session.tree.entries.values_mut() {
                             e.requested = false;
                         }
-                        session.subscribed.clear();
                     }
-                    NetEvent::Document(root) => {
+                    NetEvent::Document { roots, .. } => {
                         // Snapshot logged params' values, merge, then log changes.
                         let snaps: Vec<(Vec<u32>, Option<Value>)> = session
                             .logged
                             .iter()
                             .map(|p| (p.clone(), session.tree.get(p).and_then(|e| e.value.clone())))
                             .collect();
-                        session.tree.merge(root);
+                        for root in roots.iter() {
+                            session.tree.merge(root.clone());
+                        }
                         for (p, old) in snaps {
                             if let Some(e) = session.tree.get(&p) {
                                 if e.value.is_some() && e.value != old {
@@ -407,6 +566,10 @@ impl eframe::App for App {
         if self.applied_dark != Some(self.settings.dark_mode) {
             apply_theme(&ctx, self.settings.dark_mode);
             self.applied_dark = Some(self.settings.dark_mode);
+        }
+        // Keep the web server's provider list current with the address book.
+        if self.server.is_some() {
+            self.refresh_catalog();
         }
         self.pump_network();
         self.process_pulses(&ctx);
@@ -915,6 +1078,10 @@ impl App {
         }
         let mut open = self.show_options;
         let mut changed = false;
+        // Server start/stop is deferred until after the window closure (it needs
+        // a clean &mut self).
+        let mut do_sync = false;
+        let mut do_restart = false;
         egui::Window::new("Options")
             .open(&mut open)
             .resizable(false)
@@ -997,8 +1164,136 @@ impl App {
                     self.applied_dark = Some(self.settings.dark_mode);
                     changed = true;
                 }
+
+                ui.separator();
+                ui.label(egui::RichText::new("Server mode (browser access)").strong());
+                if ui
+                    .checkbox(&mut self.settings.server_enabled, "Enable web server")
+                    .on_hover_text("Serve this instance to browsers on your network")
+                    .changed()
+                {
+                    changed = true;
+                    do_sync = true;
+                }
+                ui.horizontal(|ui| {
+                    ui.label("Port");
+                    if ui
+                        .add(egui::DragValue::new(&mut self.settings.server_port).range(1..=65535))
+                        .changed()
+                    {
+                        changed = true;
+                        do_restart = true;
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Bind to");
+                    let nics = list_nics();
+                    let current = if self.settings.server_bind == "0.0.0.0" {
+                        "All interfaces".to_string()
+                    } else {
+                        self.settings.server_bind.clone()
+                    };
+                    egui::ComboBox::from_id_salt("bind")
+                        .selected_text(current)
+                        .show_ui(ui, |ui| {
+                            if ui
+                                .selectable_label(
+                                    self.settings.server_bind == "0.0.0.0",
+                                    "All interfaces",
+                                )
+                                .clicked()
+                            {
+                                self.settings.server_bind = "0.0.0.0".into();
+                                changed = true;
+                                do_restart = true;
+                            }
+                            for (name, ip) in &nics {
+                                let s = ip.to_string();
+                                if ui
+                                    .selectable_label(
+                                        self.settings.server_bind == s,
+                                        format!("{name} ({ip})"),
+                                    )
+                                    .clicked()
+                                {
+                                    self.settings.server_bind = s;
+                                    changed = true;
+                                    do_restart = true;
+                                }
+                            }
+                        });
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Token");
+                    if ui
+                        .add(
+                            egui::TextEdit::singleline(&mut self.settings.server_token)
+                                .desired_width(160.0),
+                        )
+                        .changed()
+                    {
+                        changed = true;
+                        do_restart = true;
+                    }
+                    if ui.button("Regenerate").clicked() {
+                        self.settings.server_token = generate_token();
+                        changed = true;
+                        do_restart = true;
+                    }
+                });
+                if ui
+                    .checkbox(
+                        &mut self.settings.server_open_lan,
+                        "Open on LAN (no token — anyone can control)",
+                    )
+                    .changed()
+                {
+                    changed = true;
+                    do_restart = true;
+                }
+                if ui
+                    .checkbox(&mut self.settings.server_read_only, "Web clients read-only")
+                    .changed()
+                {
+                    changed = true;
+                    do_restart = true;
+                }
+                if let Some(srv) = &self.server {
+                    ui.colored_label(ACCENT, format!("● listening on port {}", srv.bound.port()));
+                    let nics = list_nics();
+                    if let Some(ip) = display_ip(&self.settings.server_bind, &nics) {
+                        let url = web_url(
+                            ip,
+                            srv.bound.port(),
+                            &self.settings.server_token,
+                            self.settings.server_open_lan,
+                        );
+                        ui.horizontal(|ui| {
+                            ui.hyperlink_to("open web page", &url);
+                            if ui.button("Copy URL").clicked() {
+                                ui.ctx().copy_text(url.clone());
+                            }
+                        });
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new("Scan to open on a phone:")
+                                .small()
+                                .weak(),
+                        );
+                        draw_qr(ui, &url);
+                    } else if !self.settings.server_open_lan
+                        && ui.button("Copy access token").clicked()
+                    {
+                        ui.ctx().copy_text(self.settings.server_token.clone());
+                    }
+                }
             });
         self.show_options = open;
+        if do_sync {
+            self.sync_server();
+        } else if do_restart {
+            self.restart_server();
+        }
         if changed {
             if let Err(e) = self.settings.save() {
                 self.status_line = format!("could not save settings: {e}");
@@ -1206,7 +1501,7 @@ impl App {
                     let h = (ui.available_height() - 22.0).max(40.0);
                     draw_vmeter(ui, value, range, 30.0, h);
                     if let Some(v) = value {
-                        ui.label(egui::RichText::new(format!("{v:.2}")).small());
+                        ui.label(egui::RichText::new(meter_readout(&entry, v)).small());
                     }
                 });
             });
@@ -1250,7 +1545,7 @@ impl App {
                         let h = (ui.available_height() - 46.0).max(50.0);
                         let resp = draw_vmeter(ui, value, range, 40.0, h);
                         if let Some(v) = value {
-                            ui.label(format!("{v:.3}"));
+                            ui.label(meter_readout(&entry, v));
                         }
                         resp.context_menu(|ui| {
                             let l = if aot {
@@ -1489,7 +1784,13 @@ fn render_entry(
                     if let Some(ploc) = m.params_location.clone() {
                         fetch_label_subtree(session, &ploc, commands);
                     }
-                    if let Some((is_target, sig)) = render_matrix(ui, &entry, m, opts, commands) {
+                    if let Some((is_target, sig)) = crate::matrix_view::render_matrix(
+                        ui,
+                        &entry,
+                        m,
+                        opts.matrix_targets_on_top,
+                        commands,
+                    ) {
                         // Open the clicked signal's parameter node (gain/type/…).
                         let base = if is_target {
                             m.param_targets_path.clone()
@@ -1506,7 +1807,16 @@ fn render_entry(
                         }
                     }
                 } else if let Some(f) = &entry.function {
-                    render_function(ui, session, &entry, f, commands);
+                    render_function(
+                        ui,
+                        &entry,
+                        f,
+                        &mut session.func_inputs,
+                        &mut session.invocations,
+                        &mut session.next_invocation_id,
+                        &session.tree.invocation_results,
+                        commands,
+                    );
                 }
                 let children = sorted_paths(&session.tree, &entry.children, opts.order_by);
                 for child in &children {
@@ -1761,45 +2071,6 @@ fn editor(
     }
 }
 
-/// The literal text after a printf conversion specifier in a parameter's format
-/// (e.g. "%d dB" → " dB"), used as a slider/value unit suffix.
-fn format_suffix(entry: &crate::model::Entry) -> String {
-    let Some(fmt) = &entry.format else {
-        return String::new();
-    };
-    if let Some(pct) = fmt.find('%') {
-        let rest = &fmt[pct + 1..];
-        if let Some(conv) = rest.find(|c: char| "diouxXeEfFgGsc".contains(c)) {
-            return rest[conv + 1..].to_string();
-        }
-    }
-    String::new()
-}
-
-/// Human-readable value: enum label, or factor/format-applied number, else raw.
-fn display_value(entry: &crate::model::Entry, v: &Value) -> String {
-    match v {
-        Value::Integer(i) => {
-            if let Some(lbl) = entry.enum_label(*i) {
-                lbl.to_string()
-            } else {
-                let factor = entry.factor.unwrap_or(1).max(1);
-                if factor != 1 {
-                    format!("{}{}", *i as f64 / factor as f64, format_suffix(entry))
-                } else if entry.format.is_some() {
-                    format!("{i}{}", format_suffix(entry))
-                } else {
-                    i.to_string()
-                }
-            }
-        }
-        Value::Real(r) if entry.format.is_some() => {
-            format!("{}{}", r.to_f64(), format_suffix(entry))
-        }
-        _ => format_value(v),
-    }
-}
-
 /// Eagerly fetch a matrix label sub-tree so source/target names resolve:
 /// request the base node, then its `targets`/`sources` children (whose
 /// getDirectory returns the label string params). Deduped via `label_fetch`.
@@ -1824,87 +2095,6 @@ fn fetch_label_subtree(session: &mut Session, base: &[u32], commands: &mut Vec<N
     }
 }
 
-/// A numeric value as f64, if the value is numeric.
-fn value_f64(v: &Value) -> Option<f64> {
-    match v {
-        Value::Integer(i) => Some(*i as f64),
-        Value::Real(r) => Some(r.to_f64()),
-        _ => None,
-    }
-}
-
-/// Whether a parameter can be shown as a meter (numeric value).
-fn is_meterable(entry: &crate::model::Entry) -> bool {
-    entry.value.as_ref().and_then(value_f64).is_some()
-}
-
-/// The meter range for an entry: explicit min/max if present, else an
-/// auto-tracked range that expands to fit observed values.
-fn meter_range(
-    entry: &crate::model::Entry,
-    tracked: &mut HashMap<Vec<u32>, (f64, f64)>,
-) -> (f64, f64) {
-    if let (Some(lo), Some(hi)) = (
-        entry.minimum.as_ref().and_then(value_f64),
-        entry.maximum.as_ref().and_then(value_f64),
-    ) {
-        if hi > lo {
-            return (lo, hi);
-        }
-    }
-    let v = entry.value.as_ref().and_then(value_f64).unwrap_or(0.0);
-    let range = tracked
-        .entry(entry.path.clone())
-        .or_insert((v - 0.5, v + 0.5));
-    range.0 = range.0.min(v);
-    range.1 = range.1.max(v);
-    if range.1 - range.0 < 1e-6 {
-        range.1 = range.0 + 1.0;
-    }
-    *range
-}
-
-/// A green→amber→red colour for a 0..1 meter fraction.
-fn meter_color(frac: f32) -> egui::Color32 {
-    if frac < 0.6 {
-        egui::Color32::from_rgb(40, 170, 80)
-    } else if frac < 0.85 {
-        egui::Color32::from_rgb(210, 170, 30)
-    } else {
-        egui::Color32::from_rgb(210, 70, 60)
-    }
-}
-
-/// Draw a vertical bar-graph meter filling `width` × `height`.
-fn draw_vmeter(
-    ui: &mut egui::Ui,
-    value: Option<f64>,
-    range: (f64, f64),
-    width: f32,
-    height: f32,
-) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click());
-    let painter = ui.painter();
-    painter.rect_filled(rect, 3.0, ui.visuals().extreme_bg_color);
-    painter.rect_stroke(
-        rect,
-        3.0,
-        egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
-        egui::StrokeKind::Inside,
-    );
-    if let Some(v) = value {
-        let (min, max) = range;
-        let frac = (((v - min) / (max - min)) as f32).clamp(0.0, 1.0);
-        let fill_h = (rect.height() - 2.0) * frac;
-        let fill = egui::Rect::from_min_max(
-            egui::pos2(rect.min.x + 1.0, rect.max.y - 1.0 - fill_h),
-            egui::pos2(rect.max.x - 1.0, rect.max.y - 1.0),
-        );
-        painter.rect_filled(fill, 2.0, meter_color(frac));
-    }
-    resp
-}
-
 /// Paint a small filled status dot inline (drawn, not a font glyph, so it always
 /// renders regardless of the available fonts).
 fn paint_dot(ui: &mut egui::Ui, color: egui::Color32) {
@@ -1913,6 +2103,23 @@ fn paint_dot(ui: &mut egui::Ui, color: egui::Color32) {
         egui::Sense::hover(),
     );
     ui.painter().circle_filled(rect.center(), 4.5, color);
+}
+
+/// Convert an address-book node into its wire form (folders + providers) for the
+/// browser's left pane.
+fn node_to_wire(node: &Node) -> WireNode {
+    match node {
+        Node::Provider(p) => WireNode::Provider(WireProvider {
+            id: p.id,
+            name: p.name.clone(),
+            host: p.host.clone(),
+            port: p.port,
+        }),
+        Node::Folder(f) => WireNode::Folder {
+            name: f.name.clone(),
+            children: f.children.iter().map(node_to_wire).collect(),
+        },
+    }
 }
 
 /// Collect every provider id within a node subtree.
@@ -2038,387 +2245,6 @@ fn render_filtered(
     } else {
         visible.push(path.to_vec());
         render_parameter(ui, session, &entry, opts, eff_online, row, commands);
-    }
-}
-
-/// Render a matrix as a crosspoint grid. With `matrix_targets_on_top`, targets
-/// are columns and sources are rows; otherwise the axes are swapped.
-/// Renders the crosspoint grid. Returns `Some((is_target, signal))` when the
-/// user clicks a row/column header, so the caller can open that signal's params.
-fn render_matrix(
-    ui: &mut egui::Ui,
-    entry: &crate::model::Entry,
-    m: &crate::model::MatrixInfo,
-    opts: &RenderOpts,
-    commands: &mut Vec<NetCommand>,
-) -> Option<(bool, u32)> {
-    let mut header_clicked: Option<(bool, u32)> = None;
-    let path = entry.path.clone();
-    let kind = match m.mtype {
-        x if x == glow::matrix_type::ONE_TO_N => "1:N",
-        x if x == glow::matrix_type::ONE_TO_ONE => "1:1",
-        x if x == glow::matrix_type::N_TO_N => "N:N",
-        _ => "?",
-    };
-    ui.label(format!(
-        "Matrix {}×{} ({kind})",
-        m.target_count, m.source_count
-    ));
-    let (col_letter, row_letter) = if opts.matrix_targets_on_top {
-        ("targets", "sources")
-    } else {
-        ("sources", "targets")
-    };
-    ui.label(
-        egui::RichText::new(format!(
-            "columns (top) = {col_letter}, rows (left) = {row_letter}"
-        ))
-        .small()
-        .weak(),
-    );
-
-    // Signal sets, augmented with any signals referenced by connections so a
-    // crosspoint always has a visible cell even if targets/sources were sparse.
-    let mut target_set: std::collections::BTreeSet<u32> = m.targets.iter().copied().collect();
-    let mut source_set: std::collections::BTreeSet<u32> = m.sources.iter().copied().collect();
-    for (t, srcs) in &m.connections {
-        target_set.insert(*t);
-        source_set.extend(srcs.iter().copied());
-    }
-    let targets_v: Vec<u32> = target_set.into_iter().collect();
-    let sources_v: Vec<u32> = source_set.into_iter().collect();
-
-    // Columns/rows iterate the actual signal numbers (sparse on real devices).
-    let (col_signals, row_signals): (&[u32], &[u32]) = if opts.matrix_targets_on_top {
-        (&targets_v, &sources_v)
-    } else {
-        (&sources_v, &targets_v)
-    };
-    let (col_labels, row_labels) = if opts.matrix_targets_on_top {
-        (&m.target_labels, &m.source_labels)
-    } else {
-        (&m.source_labels, &m.target_labels)
-    };
-    let col_kind = if opts.matrix_targets_on_top {
-        "target"
-    } else {
-        "source"
-    };
-    let row_kind = if opts.matrix_targets_on_top {
-        "source"
-    } else {
-        "target"
-    };
-
-    let dark = ui.visuals().dark_mode;
-    let (light_row, dark_row) = if dark {
-        (egui::Color32::from_gray(40), egui::Color32::from_gray(72))
-    } else {
-        (egui::Color32::from_gray(238), egui::Color32::from_gray(212))
-    };
-    // Connected crosspoints get a darker, saturated burnt-orange so they stand
-    // out more strongly than the muted row-selection tint.
-    let crosspoint = egui::Color32::from_rgb(150, 74, 16);
-
-    const CELL: f32 = 18.0;
-    #[allow(unused)]
-    let draw_label = |ui: &mut egui::Ui, text: &str, strong: bool| -> egui::Response {
-        let (rect, resp) = ui.allocate_exact_size(egui::vec2(CELL, CELL), egui::Sense::hover());
-        ui.painter().text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
-            text,
-            egui::FontId::proportional(9.0),
-            if strong {
-                ui.visuals().text_color()
-            } else {
-                ui.visuals().weak_text_color()
-            },
-        );
-        resp
-    };
-    let head_tip =
-        |labels: &std::collections::BTreeMap<u32, String>, kind: &str, n: u32| match labels.get(&n)
-        {
-            Some(name) => format!("{kind} {n}: {name}"),
-            None => format!("{kind} {n}"),
-        };
-
-    let avail_w = ui.available_width();
-    egui::Resize::default()
-        .id_salt(("mresize", &path))
-        .default_size([avail_w.min(720.0), 360.0])
-        .min_height(80.0)
-        .show(ui, |ui| {
-            egui::ScrollArea::both()
-                .id_salt(("mscroll", &path))
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(1.0, 1.0);
-                    // Resizable row-label column width (persisted by egui/eframe).
-                    let lw_id = egui::Id::new(("matrix_label_w", &path));
-                    let mut label_w = ui
-                        .ctx()
-                        .data_mut(|d| d.get_persisted::<f32>(lw_id))
-                        .unwrap_or(96.0);
-
-                    // Draw a left row-label cell (signal number + name), clipped to width.
-                    let row_label = |ui: &mut egui::Ui, w: f32, num: u32, name: Option<&String>| {
-                        let (rect, resp) =
-                            ui.allocate_exact_size(egui::vec2(w, CELL), egui::Sense::click());
-                        let text = match name {
-                            Some(n) => format!("{num} {n}"),
-                            None => num.to_string(),
-                        };
-                        // painter_at clips the text to the cell, so long names truncate.
-                        ui.painter_at(rect).text(
-                            egui::pos2(rect.left() + 2.0, rect.center().y),
-                            egui::Align2::LEFT_CENTER,
-                            text,
-                            egui::FontId::proportional(10.0),
-                            ui.visuals().text_color(),
-                        );
-                        resp
-                    };
-
-                    // Resizable column-header height. Default tall enough to show rotated
-                    // names when the columns have labels (else compact). Only the user's
-                    // drag is persisted — otherwise the height-18 captured before the
-                    // labels arrive would stick and the names would never rotate in.
-                    let hh_id = egui::Id::new(("matrix_header_h", &path));
-                    let default_hh = if col_labels.is_empty() { 18.0 } else { 76.0 };
-                    let mut header_h = ui
-                        .ctx()
-                        .data_mut(|d| d.get_persisted::<f32>(hh_id))
-                        .unwrap_or(default_hh);
-
-                    ui.horizontal(|ui| {
-                        // Corner doubles as a 2D resize handle: x → label width, y → header height.
-                        let (crect, cresp) = ui.allocate_exact_size(
-                            egui::vec2(label_w, header_h),
-                            egui::Sense::drag(),
-                        );
-                        ui.painter().text(
-                            crect.right_bottom() - egui::vec2(2.0, 1.0),
-                            egui::Align2::RIGHT_BOTTOM,
-                            format!("{row_kind}\\{col_kind}"),
-                            egui::FontId::proportional(9.0),
-                            ui.visuals().weak_text_color(),
-                        );
-                        if cresp.dragged() {
-                            label_w = (label_w + cresp.drag_delta().x).clamp(24.0, 480.0);
-                            header_h = (header_h + cresp.drag_delta().y).clamp(18.0, 240.0);
-                            ui.ctx().data_mut(|d| {
-                                d.insert_persisted(lw_id, label_w);
-                                d.insert_persisted(hh_id, header_h);
-                            });
-                        }
-                        cresp
-                            .on_hover_cursor(egui::CursorIcon::ResizeNwSe)
-                            .on_hover_text("drag to resize the label column / header height");
-                        for &c in col_signals {
-                            let (rect, resp) = ui.allocate_exact_size(
-                                egui::vec2(CELL, header_h),
-                                egui::Sense::click(),
-                            );
-                            let name = col_labels.get(&c).filter(|_| header_h > 24.0);
-                            if let Some(n) = name {
-                                // Rotated column name reading bottom-to-top.
-                                let text = format!("{c} {n}");
-                                let galley = ui.painter().layout_no_wrap(
-                                    text,
-                                    egui::FontId::proportional(10.0),
-                                    ui.visuals().text_color(),
-                                );
-                                let mut shape = egui::epaint::TextShape::new(
-                                    egui::pos2(
-                                        rect.center().x - galley.size().y / 2.0,
-                                        rect.bottom() - 2.0,
-                                    ),
-                                    galley,
-                                    ui.visuals().text_color(),
-                                );
-                                shape.angle = -std::f32::consts::FRAC_PI_2;
-                                ui.painter_at(rect).add(shape);
-                            } else {
-                                ui.painter_at(rect).text(
-                                    rect.center(),
-                                    egui::Align2::CENTER_CENTER,
-                                    c.to_string(),
-                                    egui::FontId::proportional(9.0),
-                                    ui.visuals().weak_text_color(),
-                                );
-                            }
-                            let resp = resp
-                                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                .on_hover_text(format!(
-                                    "{}\n(click for signal parameters)",
-                                    head_tip(col_labels, col_kind, c)
-                                ));
-                            if resp.clicked() {
-                                header_clicked = Some((opts.matrix_targets_on_top, c));
-                            }
-                        }
-                    });
-                    for (ri, &r) in row_signals.iter().enumerate() {
-                        ui.horizontal(|ui| {
-                            let rl = row_label(ui, label_w, r, row_labels.get(&r))
-                                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                .on_hover_text(format!(
-                                    "{}\n(click for signal parameters)",
-                                    head_tip(row_labels, row_kind, r)
-                                ));
-                            if rl.clicked() {
-                                header_clicked = Some((!opts.matrix_targets_on_top, r));
-                            }
-                            let row_bg = if ri % 2 == 0 { light_row } else { dark_row };
-                            for &c in col_signals {
-                                let (t, s) = if opts.matrix_targets_on_top {
-                                    (c, r)
-                                } else {
-                                    (r, c)
-                                };
-                                let on = m.connections.get(&t).is_some_and(|set| set.contains(&s));
-                                let (rect, resp) = ui.allocate_exact_size(
-                                    egui::vec2(CELL, CELL),
-                                    egui::Sense::click(),
-                                );
-                                let fill = if on {
-                                    crosspoint
-                                } else if resp.hovered() {
-                                    ui.visuals().widgets.hovered.bg_fill
-                                } else {
-                                    row_bg
-                                };
-                                ui.painter().rect_filled(rect, 2.0, fill);
-                                let tname = m
-                                    .target_labels
-                                    .get(&t)
-                                    .map(|n| format!(" ({n})"))
-                                    .unwrap_or_default();
-                                let sname = m
-                                    .source_labels
-                                    .get(&s)
-                                    .map(|n| format!(" ({n})"))
-                                    .unwrap_or_default();
-                                let resp = resp.on_hover_text(format!(
-                                    "target {t}{tname} <- source {s}{sname}"
-                                ));
-                                if resp.clicked() {
-                                    let operation = if on {
-                                        glow::connection_operation::DISCONNECT
-                                    } else if m.mtype == glow::matrix_type::N_TO_N {
-                                        glow::connection_operation::CONNECT
-                                    } else {
-                                        glow::connection_operation::ABSOLUTE
-                                    };
-                                    commands.push(NetCommand::MatrixConnect {
-                                        path: path.clone(),
-                                        target: t,
-                                        sources: vec![s],
-                                        operation,
-                                    });
-                                }
-                            }
-                        });
-                    }
-                });
-        });
-    header_clicked
-}
-
-/// Render a function's argument form, an Invoke button, and the last result.
-fn render_function(
-    ui: &mut egui::Ui,
-    session: &mut Session,
-    entry: &crate::model::Entry,
-    f: &crate::model::FunctionInfo,
-    commands: &mut Vec<NetCommand>,
-) {
-    let path = entry.path.clone();
-    if f.args.is_empty() {
-        ui.weak("no arguments");
-    }
-    for (i, arg) in f.args.iter().enumerate() {
-        ui.horizontal(|ui| {
-            ui.label(format!("{} ({})", arg.name, ptype_name(arg.ptype)));
-            let buf = session.func_inputs.entry((path.clone(), i)).or_default();
-            ui.add(egui::TextEdit::singleline(buf).desired_width(120.0));
-        });
-    }
-    ui.horizontal(|ui| {
-        if ui.button("Invoke").clicked() {
-            let args: Vec<Value> = f
-                .args
-                .iter()
-                .enumerate()
-                .map(|(i, arg)| {
-                    let s = session
-                        .func_inputs
-                        .get(&(path.clone(), i))
-                        .cloned()
-                        .unwrap_or_default();
-                    parse_value(&s, arg.ptype)
-                })
-                .collect();
-            let id = session.next_invocation_id;
-            session.next_invocation_id += 1;
-            session.invocations.insert(path.clone(), id);
-            commands.push(NetCommand::Invoke {
-                path: path.clone(),
-                invocation_id: id,
-                args,
-            });
-        }
-    });
-    if let Some(id) = session.invocations.get(&path) {
-        if let Some(outcome) = session.tree.invocation_results.get(id) {
-            let names: Vec<String> = if f.result.len() == outcome.values.len() {
-                f.result
-                    .iter()
-                    .zip(&outcome.values)
-                    .map(|(slot, v)| format!("{}={}", slot.name, format_value(v)))
-                    .collect()
-            } else {
-                outcome.values.iter().map(format_value).collect()
-            };
-            let status = if outcome.success { "OK" } else { "FAILED" };
-            ui.colored_label(
-                if outcome.success {
-                    egui::Color32::from_rgb(40, 160, 80)
-                } else {
-                    egui::Color32::from_rgb(200, 60, 60)
-                },
-                format!("Result {status}: {}", names.join(", ")),
-            );
-        }
-    }
-}
-
-fn ptype_name(ptype: i32) -> &'static str {
-    use glow::parameter_type as pt;
-    match ptype {
-        x if x == pt::INTEGER => "int",
-        x if x == pt::REAL => "real",
-        x if x == pt::STRING => "string",
-        x if x == pt::BOOLEAN => "bool",
-        x if x == pt::ENUM => "enum",
-        x if x == pt::OCTETS => "octets",
-        _ => "?",
-    }
-}
-
-fn parse_value(s: &str, ptype: i32) -> Value {
-    use glow::parameter_type as pt;
-    let t = s.trim();
-    match ptype {
-        x if x == pt::INTEGER || x == pt::ENUM => Value::Integer(t.parse().unwrap_or(0)),
-        x if x == pt::REAL => Value::Real(t.parse::<f64>().unwrap_or(0.0).into()),
-        x if x == pt::BOOLEAN => Value::Boolean(matches!(
-            t.to_lowercase().as_str(),
-            "true" | "1" | "yes" | "on"
-        )),
-        _ => Value::String(s.to_string()),
     }
 }
 

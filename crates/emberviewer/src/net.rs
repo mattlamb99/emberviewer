@@ -1,17 +1,20 @@
 //! Bridge between the egui UI (main thread) and async Ember+ connections.
 //!
-//! Each connection runs as a task on a shared tokio runtime. The UI sends
-//! [`NetCommand`]s down an unbounded channel and drains [`NetEvent`]s each frame.
-//! Whenever an event is produced we request an egui repaint so the UI wakes up.
+//! Each connection runs as a task on a shared tokio runtime, owned by a
+//! [`crate::hub::Hub`] that fans one connection out to many subscribers. The UI
+//! holds a [`ConnectionHandle`] (one subscriber): it sends [`NetCommand`]s and
+//! drains [`NetEvent`]s each frame. Whenever an event is produced the connection
+//! task requests an egui repaint so the UI wakes up.
 
-use std::sync::mpsc;
+use std::sync::Arc;
 
-use ember_net::{Connection, Inbound};
 use ember_proto::glow::{Root, Value};
-use tokio::sync::mpsc as tokio_mpsc;
 
-/// A command from the UI to a connection task.
-#[derive(Debug)]
+#[cfg(not(target_arch = "wasm32"))]
+use crate::hub::{HubLease, HubRegistry};
+
+/// A command from a consumer to a connection.
+#[derive(Debug, Clone)]
 pub enum NetCommand {
     /// Request the directory (children) of the node at this path (empty = root).
     GetDirectory(Vec<u32>),
@@ -41,13 +44,23 @@ pub enum NetCommand {
     Disconnect,
 }
 
-/// An event from a connection task to the UI.
-#[derive(Debug)]
+/// An event from a connection to its consumers.
+// Constructed only on native (hub/server); the wasm client uses its own event
+// type, so the variants look unused there.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[derive(Debug, Clone)]
 pub enum NetEvent {
     /// Freshly connected (initial or after a reconnect).
     Connected,
-    /// A decoded Glow document to merge into the tree.
-    Document(Root),
+    /// The decoded Glow documents from one provider message, to merge into the
+    /// tree, plus the original BER bytes they came from. The desktop UI merges
+    /// `roots`; the server forwards `raw` verbatim so a browser decodes exactly
+    /// what `ember-net` decoded (re-encoding the parsed tree could be lossy for
+    /// vendor extensions the tolerant decoder keeps but the encoder can't restore).
+    Document {
+        roots: Arc<Vec<Root>>,
+        raw: Arc<Vec<u8>>,
+    },
     /// The connection dropped; will retry in `retry_in_secs`.
     Reconnecting { retry_in_secs: u64, reason: String },
     /// The connection ended for good (user disconnect or fatal).
@@ -56,165 +69,36 @@ pub enum NetEvent {
     Error(String),
 }
 
-/// UI-side handle to a running connection.
+/// UI-side handle to a running connection: the desktop's [`HubLease`] on the
+/// shared per-provider Hub. Dropping it releases the desktop's view (and shuts
+/// the connection down if no other viewer — e.g. a browser — holds it).
+#[cfg(not(target_arch = "wasm32"))]
 pub struct ConnectionHandle {
-    cmd_tx: tokio_mpsc::UnboundedSender<NetCommand>,
-    evt_rx: mpsc::Receiver<NetEvent>,
+    lease: HubLease,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl ConnectionHandle {
-    /// Spawn a connection task on `rt` connecting to `addr`. `ctx` is used to
-    /// wake the UI when events arrive.
-    pub fn spawn(
-        rt: &tokio::runtime::Handle,
+    /// Attach the desktop as a viewer of provider `id` (connecting to `addr` if
+    /// it isn't already open).
+    pub fn open(
+        registry: &HubRegistry,
+        id: u64,
         addr: String,
-        ctx: egui::Context,
         keepalive: bool,
     ) -> ConnectionHandle {
-        let (cmd_tx, cmd_rx) = tokio_mpsc::unbounded_channel();
-        let (evt_tx, evt_rx) = mpsc::channel();
-        rt.spawn(run_connection(addr, cmd_rx, evt_tx, ctx, keepalive));
-        ConnectionHandle { cmd_tx, evt_rx }
+        ConnectionHandle {
+            lease: registry.open(id, addr, keepalive),
+        }
     }
 
-    /// Send a command (ignored if the task has ended).
+    /// Send a command (ignored if the connection has ended).
     pub fn send(&self, cmd: NetCommand) {
-        let _ = self.cmd_tx.send(cmd);
+        self.lease.send(cmd);
     }
 
     /// Drain all pending events.
-    pub fn drain(&self) -> Vec<NetEvent> {
-        self.evt_rx.try_iter().collect()
-    }
-}
-
-const MAX_BACKOFF_SECS: u64 = 30;
-
-async fn run_connection(
-    addr: String,
-    mut cmd_rx: tokio_mpsc::UnboundedReceiver<NetCommand>,
-    evt_tx: mpsc::Sender<NetEvent>,
-    ctx: egui::Context,
-    keepalive: bool,
-) {
-    let emit = |e: NetEvent| -> bool {
-        let ok = evt_tx.send(e).is_ok();
-        ctx.request_repaint();
-        ok
-    };
-
-    let mut backoff = 1u64;
-    loop {
-        match Connection::connect(&addr).await {
-            Ok(conn) => {
-                backoff = 1; // reset on a successful connect
-                if !emit(NetEvent::Connected) {
-                    return;
-                }
-                match run_session(conn, &mut cmd_rx, &emit, keepalive).await {
-                    SessionEnd::UserDisconnect => {
-                        emit(NetEvent::Disconnected(None));
-                        return;
-                    }
-                    SessionEnd::Dropped(reason) => {
-                        if !emit(NetEvent::Reconnecting {
-                            retry_in_secs: backoff,
-                            reason,
-                        }) {
-                            return;
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                if !emit(NetEvent::Reconnecting {
-                    retry_in_secs: backoff,
-                    reason: e.to_string(),
-                }) {
-                    return;
-                }
-            }
-        }
-
-        // Wait out the backoff, but let a Disconnect command cancel the retry.
-        tokio::select! {
-            _ = tokio::time::sleep(std::time::Duration::from_secs(backoff)) => {}
-            cmd = cmd_rx.recv() => {
-                if matches!(cmd, Some(NetCommand::Disconnect) | None) {
-                    emit(NetEvent::Disconnected(None));
-                    return;
-                }
-            }
-        }
-        backoff = (backoff * 2).min(MAX_BACKOFF_SECS);
-    }
-}
-
-/// Why a session loop ended.
-enum SessionEnd {
-    UserDisconnect,
-    Dropped(String),
-}
-
-/// Drive one live connection until it drops or the user disconnects.
-async fn run_session(
-    conn: Connection,
-    cmd_rx: &mut tokio_mpsc::UnboundedReceiver<NetCommand>,
-    emit: &impl Fn(NetEvent) -> bool,
-    keepalive: bool,
-) -> SessionEnd {
-    let (mut reader, mut writer) = conn.into_split();
-
-    // Kick off discovery at the root.
-    if let Err(e) = writer.get_directory(&[]).await {
-        emit(NetEvent::Error(e.to_string()));
-    }
-
-    let mut keepalive_timer = tokio::time::interval(std::time::Duration::from_secs(2));
-    // Skip the immediate first tick.
-    keepalive_timer.tick().await;
-
-    loop {
-        tokio::select! {
-            _ = keepalive_timer.tick(), if keepalive => {
-                if let Err(e) = writer.keepalive_request().await {
-                    return SessionEnd::Dropped(e.to_string());
-                }
-            }
-            cmd = cmd_rx.recv() => {
-                let result = match cmd {
-                    Some(NetCommand::GetDirectory(path)) => writer.get_directory(&path).await,
-                    Some(NetCommand::GetMatrixDirectory(path)) => {
-                        writer.get_matrix_directory(&path).await
-                    }
-                    Some(NetCommand::SetValue(path, value)) => writer.set_value(&path, value).await,
-                    Some(NetCommand::Subscribe(path)) => writer.subscribe(&path).await,
-                    Some(NetCommand::Unsubscribe(path)) => writer.unsubscribe(&path).await,
-                    Some(NetCommand::MatrixConnect { path, target, sources, operation }) => {
-                        writer.matrix_connect(&path, target, &sources, operation).await
-                    }
-                    Some(NetCommand::Invoke { path, invocation_id, args }) => {
-                        writer.invoke(&path, invocation_id, args).await
-                    }
-                    Some(NetCommand::Disconnect) | None => return SessionEnd::UserDisconnect,
-                };
-                if let Err(e) = result {
-                    // A write failure means the link is gone — drop and reconnect.
-                    return SessionEnd::Dropped(e.to_string());
-                }
-            }
-            inbound = reader.recv() => match inbound {
-                Ok(Some(Inbound::Documents(roots))) => {
-                    for root in roots {
-                        emit(NetEvent::Document(root));
-                    }
-                }
-                Ok(Some(Inbound::KeepAliveRequest)) => {
-                    let _ = writer.keepalive_response().await;
-                }
-                Ok(None) => return SessionEnd::Dropped("connection closed by provider".into()),
-                Err(e) => return SessionEnd::Dropped(e.to_string()),
-            },
-        }
+    pub fn drain(&mut self) -> Vec<NetEvent> {
+        self.lease.drain()
     }
 }

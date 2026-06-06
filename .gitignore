@@ -13,3 +13,8 @@
 
 # Local Claude Code settings
 /.claude/settings.local.json
+/crates/emberviewer/web-dist/
+
+
+#Strix
+/strix_runs

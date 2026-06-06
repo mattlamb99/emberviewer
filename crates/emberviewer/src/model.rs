@@ -25,6 +25,8 @@ impl Kind {
 }
 
 /// A function argument or result slot.
+// Functions/invocations are rendered by the desktop app only for now.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 #[derive(Debug, Clone)]
 pub struct TupleItem {
     pub name: String,
@@ -72,6 +74,7 @@ pub struct EnumEntry {
 }
 
 /// Function detail, attached to a function entry.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 #[derive(Debug, Clone, Default)]
 pub struct FunctionInfo {
     pub args: Vec<TupleItem>,
@@ -79,6 +82,7 @@ pub struct FunctionInfo {
 }
 
 /// The outcome of a function invocation.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 #[derive(Debug, Clone)]
 pub struct InvocationOutcome {
     pub success: bool,
