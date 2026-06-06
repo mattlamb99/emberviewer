@@ -301,12 +301,13 @@ impl App {
                 match event {
                     NetEvent::Connected => {
                         session.status = Status::Connected;
-                        // (Re)establish: refetch every expanded node and
-                        // re-subscribe visible params on the new connection.
+                        // Re-fetch every expanded node on the new connection. The
+                        // hub re-subscribes active paths itself, so we keep our
+                        // `subscribed` set intact (clearing it would desync the
+                        // ref-counts and leave orphaned device subscriptions).
                         for e in session.tree.entries.values_mut() {
                             e.requested = false;
                         }
-                        session.subscribed.clear();
                     }
                     NetEvent::Document(root) => {
                         // Snapshot logged params' values, merge, then log changes.

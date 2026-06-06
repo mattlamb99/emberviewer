@@ -5,6 +5,7 @@
 mod address_book;
 mod app;
 mod discovery;
+mod hub;
 mod model;
 mod net;
 mod settings;
