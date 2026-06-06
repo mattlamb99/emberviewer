@@ -944,6 +944,76 @@ pub fn decode_root(bytes: &[u8]) -> Result<Root, rasn::error::DecodeError> {
     rasn::ber::decode(bytes)
 }
 
+/// Decode one or more concatenated `Root` documents from a single payload.
+///
+/// `rasn::ber::decode` insists on consuming every byte, but real providers may
+/// pack several Root PDUs into one S101 message (or append a trailing PDU). We
+/// split the payload into top-level BER elements and decode each independently,
+/// so one odd element doesn't sink the rest. Returns a result per element.
+pub fn decode_roots(bytes: &[u8]) -> Vec<Result<Root, rasn::error::DecodeError>> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        // Skip stray end-of-contents markers / zero padding between PDUs.
+        if bytes[i] == 0 {
+            i += 1;
+            continue;
+        }
+        match element_end(bytes, i) {
+            Some(end) if end > i && end <= bytes.len() => {
+                out.push(rasn::ber::decode(&bytes[i..end]));
+                i = end;
+            }
+            _ => {
+                // Boundary undeterminable — decode whatever remains, then stop.
+                out.push(rasn::ber::decode(&bytes[i..]));
+                break;
+            }
+        }
+    }
+    if out.is_empty() {
+        out.push(rasn::ber::decode(bytes));
+    }
+    out
+}
+
+/// Return the index just past the complete BER element starting at `start`,
+/// handling definite and indefinite (`0x80` + `00 00`) lengths. `None` if the
+/// data is truncated or malformed.
+fn element_end(data: &[u8], start: usize) -> Option<usize> {
+    let mut i = start;
+    let first = *data.get(i)?;
+    i += 1;
+    // Multi-byte tag (low 5 bits all set): consume continuation octets.
+    if first & 0x1F == 0x1F {
+        while *data.get(i)? & 0x80 != 0 {
+            i += 1;
+        }
+        i += 1;
+    }
+    let len_byte = *data.get(i)?;
+    i += 1;
+    if len_byte == 0x80 {
+        // Indefinite length: walk child elements until end-of-contents (00 00).
+        loop {
+            if data.get(i) == Some(&0) && data.get(i + 1) == Some(&0) {
+                return Some(i + 2);
+            }
+            i = element_end(data, i)?;
+        }
+    } else if len_byte & 0x80 != 0 {
+        let n = (len_byte & 0x7F) as usize;
+        let mut len = 0usize;
+        for _ in 0..n {
+            len = (len << 8) | *data.get(i)? as usize;
+            i += 1;
+        }
+        Some(i + len)
+    } else {
+        Some(i + len_byte as usize)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

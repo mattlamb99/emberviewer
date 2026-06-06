@@ -132,10 +132,25 @@ impl Connection {
 /// Something received from the provider on the read half.
 #[derive(Debug)]
 pub enum Inbound {
-    /// A decoded Glow document.
-    Root(Root),
+    /// One or more decoded Glow documents from a single message.
+    Documents(Vec<Root>),
     /// The provider asked us to keep the connection alive; reply via the writer.
     KeepAliveRequest,
+}
+
+/// A short hex preview of a payload, for diagnostics.
+fn hex_preview(bytes: &[u8]) -> String {
+    const MAX: usize = 512;
+    let shown: String = bytes
+        .iter()
+        .take(MAX)
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    if bytes.len() > MAX {
+        format!("{shown}… ({} bytes total)", bytes.len())
+    } else {
+        shown
+    }
 }
 
 /// Read half of a split [`Connection`].
@@ -156,9 +171,20 @@ impl ProviderReader {
             for item in self.decoder.push(&self.read_buf[..n]) {
                 match item {
                     Ok(Incoming::EmberPayload(payload)) => {
-                        let root = glow::decode_root(&payload)
-                            .map_err(|e| ConnError::Decode(e.to_string()))?;
-                        return Ok(Some(Inbound::Root(root)));
+                        let mut roots = Vec::new();
+                        for result in glow::decode_roots(&payload) {
+                            match result {
+                                Ok(root) => roots.push(root),
+                                Err(e) => tracing::warn!(
+                                    "BER decode error: {e}; payload={}",
+                                    hex_preview(&payload)
+                                ),
+                            }
+                        }
+                        if !roots.is_empty() {
+                            return Ok(Some(Inbound::Documents(roots)));
+                        }
+                        // Nothing decoded — keep reading.
                     }
                     Ok(Incoming::KeepAliveRequest) => {
                         return Ok(Some(Inbound::KeepAliveRequest));

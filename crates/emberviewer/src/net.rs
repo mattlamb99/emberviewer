@@ -179,7 +179,11 @@ async fn run_session(
                 }
             }
             inbound = reader.recv() => match inbound {
-                Ok(Some(Inbound::Root(root))) => { emit(NetEvent::Document(root)); }
+                Ok(Some(Inbound::Documents(roots))) => {
+                    for root in roots {
+                        emit(NetEvent::Document(root));
+                    }
+                }
                 Ok(Some(Inbound::KeepAliveRequest)) => {
                     let _ = writer.keepalive_response().await;
                 }

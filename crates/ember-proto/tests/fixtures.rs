@@ -152,6 +152,24 @@ const INVOCATION_RESULT: &str =
     "fe000e0001c001021f0260157713a003020101a1030101fddfa2073005a0030201073045ff";
 
 #[test]
+fn decode_roots_handles_single_and_concatenated() {
+    // A single PDU yields one root.
+    let one = payload_of(ROOT_GETDIR_RESPONSE);
+    let roots = ember_proto::glow::decode_roots(&one);
+    assert_eq!(roots.len(), 1);
+    assert!(roots[0].is_ok());
+
+    // Two PDUs concatenated in one payload yield two roots — the case a strict
+    // single decode rejects as "extra data".
+    let two_src = payload_of(CHILD_GETDIR_RESPONSE);
+    let mut concat = one.clone();
+    concat.extend_from_slice(&two_src);
+    let roots = ember_proto::glow::decode_roots(&concat);
+    assert_eq!(roots.len(), 2);
+    assert!(roots.iter().all(|r| r.is_ok()));
+}
+
+#[test]
 fn decode_matrix() {
     let payload = payload_of(MATRIX_RESPONSE);
     let root = decode_root(&payload).expect("decode matrix");
