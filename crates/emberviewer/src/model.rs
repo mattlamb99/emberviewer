@@ -55,6 +55,11 @@ pub struct MatrixInfo {
     /// `gainParameterNumber`: the sub-number of the gain parameter within a
     /// crosspoint's parameter node, if the matrix advertises one.
     pub gain_param: Option<i32>,
+    /// Resolved `parametersLocation/targets` node path; a per-target signal's
+    /// parameters live at `param_targets_path + [signal]`.
+    pub param_targets_path: Option<Vec<u32>>,
+    /// Resolved `parametersLocation/sources` node path.
+    pub param_sources_path: Option<Vec<u32>>,
 }
 
 /// One enumeration choice for an enum parameter.
@@ -560,6 +565,50 @@ impl TreeModel {
                         m.sources = sources.keys().copied().collect();
                     }
                     m.source_labels = sources;
+                }
+            }
+        }
+        self.resolve_matrix_param_paths();
+    }
+
+    /// Resolve a matrix's `parametersLocation/targets` and `/sources` child node
+    /// paths (matched by identifier), so per-signal parameters (gain, type, …)
+    /// can be addressed as `<base>/<signal>`.
+    fn resolve_matrix_param_paths(&mut self) {
+        let matrices: Vec<(Vec<u32>, Vec<u32>)> = self
+            .entries
+            .values()
+            .filter_map(|e| {
+                e.matrix
+                    .as_ref()
+                    .and_then(|m| m.params_location.clone())
+                    .map(|ploc| (e.path.clone(), ploc))
+            })
+            .collect();
+
+        for (mpath, ploc) in matrices {
+            let Some(base) = self.entries.get(&ploc) else {
+                continue;
+            };
+            let mut tpath = None;
+            let mut spath = None;
+            for axis_path in base.children.clone() {
+                let Some(axis) = self.entries.get(&axis_path) else {
+                    continue;
+                };
+                let id = axis.identifier.to_lowercase();
+                if id.contains("target") {
+                    tpath = Some(axis_path);
+                } else if id.contains("source") {
+                    spath = Some(axis_path);
+                }
+            }
+            if let Some(m) = self.entries.get_mut(&mpath).and_then(|e| e.matrix.as_mut()) {
+                if tpath.is_some() {
+                    m.param_targets_path = tpath;
+                }
+                if spath.is_some() {
+                    m.param_sources_path = spath;
                 }
             }
         }

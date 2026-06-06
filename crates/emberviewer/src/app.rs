@@ -47,6 +47,8 @@ struct Session {
     meter_range: HashMap<Vec<u32>, (f64, f64)>,
     /// Label sub-tree paths already requested (dedup for eager matrix-label fetch).
     label_fetch: HashSet<Vec<u32>>,
+    /// Open "signal parameters" popup: the signal's parameter node path + a title.
+    signal_params: Option<(Vec<u32>, String)>,
 }
 
 /// A meter popped into its own always-pinnable window.
@@ -277,6 +279,7 @@ impl App {
                 popped: Vec::new(),
                 meter_range: HashMap::new(),
                 label_fetch: HashSet::new(),
+                signal_params: None,
             },
         );
         self.active = Some(id);
@@ -431,6 +434,7 @@ impl eframe::App for App {
         self.folder_dialog(&ctx);
         self.options_window(&ctx);
         self.about_window(&ctx);
+        self.signal_params_window(&ctx);
         self.discovery_window(&ctx);
         self.tabs(ui);
 
@@ -1014,6 +1018,66 @@ impl App {
         self.show_about = open;
     }
 
+    /// Popup showing a matrix signal's parameters (gain, type, name, …), opened
+    /// by clicking a row/column header in the matrix grid.
+    fn signal_params_window(&mut self, ctx: &egui::Context) {
+        let Some(id) = self.active else {
+            return;
+        };
+        let opts = RenderOpts {
+            pulse_ms: self.settings.boolean_pulse_ms,
+            show_descriptions: self.settings.show_descriptions,
+            order_by: self.settings.order_by,
+            matrix_targets_on_top: self.settings.matrix_targets_on_top,
+        };
+        let Some(session) = self.sessions.get_mut(&id) else {
+            return;
+        };
+        let Some((node_path, title)) = session.signal_params.clone() else {
+            return;
+        };
+        let mut open = true;
+        let mut commands: Vec<NetCommand> = Vec::new();
+        egui::Window::new(format!("Signal · {title}"))
+            .open(&mut open)
+            .resizable(true)
+            .default_width(280.0)
+            .show(ctx, |ui| {
+                let Some(node) = session.tree.get(&node_path).cloned() else {
+                    // Defensive re-fetch (the click handler usually issues this).
+                    if session.label_fetch.insert(node_path.clone()) {
+                        commands.push(NetCommand::GetDirectory(node_path.clone()));
+                    }
+                    ui.weak("loading…");
+                    return;
+                };
+                let children = sorted_paths(&session.tree, &node.children, opts.order_by);
+                if children.is_empty() {
+                    ui.weak("loading…");
+                    return;
+                }
+                egui::Grid::new(("sigparams", &node_path))
+                    .num_columns(2)
+                    .striped(true)
+                    .show(ui, |ui| {
+                        for cp in &children {
+                            let Some(ce) = session.tree.get(cp).cloned() else {
+                                continue;
+                            };
+                            ui.label(egui::RichText::new(&ce.identifier).strong());
+                            editor(ui, session, &ce, &opts, &mut commands);
+                            ui.end_row();
+                        }
+                    });
+            });
+        if !open {
+            session.signal_params = None;
+        }
+        for cmd in commands {
+            session.handle.send(cmd);
+        }
+    }
+
     fn toggle_discovery(&mut self) {
         if self.discovery.is_some() {
             self.discovery = None;
@@ -1410,7 +1474,22 @@ fn render_entry(
                     if let Some(ploc) = m.params_location.clone() {
                         fetch_label_subtree(session, &ploc, commands);
                     }
-                    render_matrix(ui, &entry, m, opts, commands);
+                    if let Some((is_target, sig)) = render_matrix(ui, &entry, m, opts, commands) {
+                        // Open the clicked signal's parameter node (gain/type/…).
+                        let base = if is_target {
+                            m.param_targets_path.clone()
+                        } else {
+                            m.param_sources_path.clone()
+                        };
+                        if let Some(mut node) = base {
+                            node.push(sig);
+                            if session.label_fetch.insert(node.clone()) {
+                                commands.push(NetCommand::GetDirectory(node.clone()));
+                            }
+                            let kind = if is_target { "target" } else { "source" };
+                            session.signal_params = Some((node, format!("{kind} {sig}")));
+                        }
+                    }
                 } else if let Some(f) = &entry.function {
                     render_function(ui, session, &entry, f, commands);
                 }
@@ -1943,13 +2022,16 @@ fn render_filtered(
 
 /// Render a matrix as a crosspoint grid. With `matrix_targets_on_top`, targets
 /// are columns and sources are rows; otherwise the axes are swapped.
+/// Renders the crosspoint grid. Returns `Some((is_target, signal))` when the
+/// user clicks a row/column header, so the caller can open that signal's params.
 fn render_matrix(
     ui: &mut egui::Ui,
     entry: &crate::model::Entry,
     m: &crate::model::MatrixInfo,
     opts: &RenderOpts,
     commands: &mut Vec<NetCommand>,
-) {
+) -> Option<(bool, u32)> {
+    let mut header_clicked: Option<(bool, u32)> = None;
     let path = entry.path.clone();
     let kind = match m.mtype {
         x if x == glow::matrix_type::ONE_TO_N => "1:N",
@@ -2060,7 +2142,7 @@ fn render_matrix(
                     // Draw a left row-label cell (signal number + name), clipped to width.
                     let row_label = |ui: &mut egui::Ui, w: f32, num: u32, name: Option<&String>| {
                         let (rect, resp) =
-                            ui.allocate_exact_size(egui::vec2(w, CELL), egui::Sense::hover());
+                            ui.allocate_exact_size(egui::vec2(w, CELL), egui::Sense::click());
                         let text = match name {
                             Some(n) => format!("{num} {n}"),
                             None => num.to_string(),
@@ -2114,7 +2196,7 @@ fn render_matrix(
                         for &c in col_signals {
                             let (rect, resp) = ui.allocate_exact_size(
                                 egui::vec2(CELL, header_h),
-                                egui::Sense::hover(),
+                                egui::Sense::click(),
                             );
                             let name = col_labels.get(&c).filter(|_| header_h > 24.0);
                             if let Some(n) = name {
@@ -2144,13 +2226,28 @@ fn render_matrix(
                                     ui.visuals().weak_text_color(),
                                 );
                             }
-                            resp.on_hover_text(head_tip(col_labels, col_kind, c));
+                            let resp = resp
+                                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                .on_hover_text(format!(
+                                    "{}\n(click for signal parameters)",
+                                    head_tip(col_labels, col_kind, c)
+                                ));
+                            if resp.clicked() {
+                                header_clicked = Some((opts.matrix_targets_on_top, c));
+                            }
                         }
                     });
                     for (ri, &r) in row_signals.iter().enumerate() {
                         ui.horizontal(|ui| {
-                            row_label(ui, label_w, r, row_labels.get(&r))
-                                .on_hover_text(head_tip(row_labels, row_kind, r));
+                            let rl = row_label(ui, label_w, r, row_labels.get(&r))
+                                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                .on_hover_text(format!(
+                                    "{}\n(click for signal parameters)",
+                                    head_tip(row_labels, row_kind, r)
+                                ));
+                            if rl.clicked() {
+                                header_clicked = Some((!opts.matrix_targets_on_top, r));
+                            }
                             let row_bg = if ri % 2 == 0 { light_row } else { dark_row };
                             for &c in col_signals {
                                 let (t, s) = if opts.matrix_targets_on_top {
@@ -2204,6 +2301,7 @@ fn render_matrix(
                     }
                 });
         });
+    header_clicked
 }
 
 /// Render a function's argument form, an Invoke button, and the last result.
