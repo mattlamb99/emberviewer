@@ -406,8 +406,8 @@ impl AddressBook {
     /// and on Windows
     /// `%APPDATA%\l2\emberviewer\config\address_book.json`.
     pub fn store_path() -> Result<PathBuf, AddressBookError> {
-        let dirs = ProjectDirs::from("co", "l2", "emberviewer")
-            .ok_or(AddressBookError::NoConfigDir)?;
+        let dirs =
+            ProjectDirs::from("co", "l2", "emberviewer").ok_or(AddressBookError::NoConfigDir)?;
         Ok(dirs.config_dir().join("address_book.json"))
     }
 

@@ -9,7 +9,7 @@ use ember_proto::s101::{FrameDecoder, Incoming};
 
 /// Decode a hex string (no separators) into bytes.
 fn hex(s: &str) -> Vec<u8> {
-    assert!(s.len() % 2 == 0, "odd hex length");
+    assert!(s.len().is_multiple_of(2), "odd hex length");
     (0..s.len())
         .step_by(2)
         .map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("valid hex"))
@@ -31,10 +31,12 @@ fn payload_of(frame_hex: &str) -> Vec<u8> {
 // Captured fixtures (full S101 frames, byte-stuffed BOF..EOF).
 const ROOT_GETDIR_REQUEST: &str =
     "fe000e0001c001021f0260106b0ea00c620aa003020120a1030201fddf948fff";
-const ROOT_GETDIR_RESPONSE: &str = "fe000e0001c001021f02604c6b4aa0486a46a0030d0100a13f313da0190c1745\
+const ROOT_GETDIR_RESPONSE: &str =
+    "fe000e0001c001021f02604c6b4aa0486a46a0030d0100a13f313da0190c1745\
 6d6265725669657765725465737450726f7669646572a11b0c19456d62657256696577657220546573742050726f766964\
 6572a3030101fddf0d4aff";
-const CHILD_GETDIR_RESPONSE: &str = "fe000e0001c001021f026082010a6b820106a0326930a0050d03000100a127\
+const CHILD_GETDIR_RESPONSE: &str =
+    "fe000e0001c001021f026082010a6b820106a0326930a0050d03000100a127\
 3125a00a0c08696e74506172616da20302012aa303020100a403020164a503020103ad03020101a031692fa0050d030001\
 01a1263124a00b0c097265616c506172616da20b090980011921fdd9f01b866ea503020101ad03020102a0356933a0050d\
 03000102a12a3128a00d0c0b737472696e67506172616da20d0c0b68656c6c6f20656d626572a503020103ad03020103a0\
@@ -78,7 +80,10 @@ fn decode_root_response_qualified_node() {
     };
     assert_eq!(qn.path.arcs(), vec![0]);
     let contents = qn.contents.as_ref().expect("node contents");
-    assert_eq!(contents.identifier.as_deref(), Some("EmberViewerTestProvider"));
+    assert_eq!(
+        contents.identifier.as_deref(),
+        Some("EmberViewerTestProvider")
+    );
     assert_eq!(
         contents.description.as_deref(),
         Some("EmberViewer Test Provider")
@@ -86,6 +91,7 @@ fn decode_root_response_qualified_node() {
 }
 
 #[test]
+#[allow(clippy::approx_constant)] // 3.14159 is a wire fixture, not π
 fn decode_child_response_all_parameter_types() {
     let payload = payload_of(CHILD_GETDIR_RESPONSE);
     let root = decode_root(&payload).expect("decode child response");
@@ -142,7 +148,8 @@ fn decode_child_response_all_parameter_types() {
 }
 
 // Phase 4 fixtures — matrix, function, and an invocation result.
-const MATRIX_RESPONSE: &str = "fe000e0001c001021f02604e6b4ca04a7148a0040d020002a120311ea0080c066d61\
+const MATRIX_RESPONSE: &str =
+    "fe000e0001c001021f02604e6b4ca04a7148a0040d020002a120311ea0080c066d61\
 74726978a203020100a303020100a403020104a503020104a51e301ca00c700aa003020100a1030d0100a00c700aa00302\
 0101a1030d0102572fff";
 const FUNCTION_RESPONSE: &str = "fe000e0001c001021f0260756b73a071746fa0050d03000300a1663164a0050c03\
@@ -223,7 +230,8 @@ fn decode_function() {
 }
 
 // node-emberplus StreamCollection push: meterL=-8.68, meterR=-0.1, meterPeak=0.
-const STREAM_COLLECTION: &str = "fe000e0001c001021f02603c653aa0146512a003020101a10b0909c0021ceb851e\
+const STREAM_COLLECTION: &str =
+    "fe000e0001c001021f02603c653aa0146512a003020101a10b0909c0021ceb851e\
 b851eca0146512a003020102a10b0909c000111eb851eb851fa00c650aa003020103a1030201007cb4ff";
 
 #[test]

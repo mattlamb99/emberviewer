@@ -1,0 +1,81 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  BIN_NAME: emberviewer
+
+jobs:
+  release:
+    name: release (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target_os: linux
+          - os: macos-latest
+            target_os: macos
+          - os: windows-latest
+            target_os: windows
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-3-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-dev \
+            libssl-dev \
+            libgl1-mesa-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo & target
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release --package emberviewer
+
+      - name: Determine arch
+        id: arch
+        shell: bash
+        run: echo "arch=$(uname -m)" >> "$GITHUB_OUTPUT"
+
+      - name: Package (Linux / macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          ASSET="${BIN_NAME}-${{ matrix.target_os }}-${{ steps.arch.outputs.arch }}.tar.gz"
+          tar -czvf "$ASSET" -C target/release "$BIN_NAME"
+          echo "ASSET=$ASSET" >> "$GITHUB_ENV"
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          ASSET="${BIN_NAME}-${{ matrix.target_os }}-${{ steps.arch.outputs.arch }}.zip"
+          7z a "$ASSET" "./target/release/${BIN_NAME}.exe"
+          echo "ASSET=$ASSET" >> "$GITHUB_ENV"
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ASSET }}
+          fail_on_unmatched_files: true

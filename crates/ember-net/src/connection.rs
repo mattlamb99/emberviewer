@@ -156,11 +156,7 @@ fn full_hex(bytes: &[u8]) -> String {
 /// A short hex preview of a payload, for diagnostics.
 fn hex_preview(bytes: &[u8]) -> String {
     const MAX: usize = 512;
-    let shown: String = bytes
-        .iter()
-        .take(MAX)
-        .map(|b| format!("{b:02x}"))
-        .collect();
+    let shown: String = bytes.iter().take(MAX).map(|b| format!("{b:02x}")).collect();
     if bytes.len() > MAX {
         format!("{shown}… ({} bytes total)", bytes.len())
     } else {

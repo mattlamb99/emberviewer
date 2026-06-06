@@ -8,6 +8,7 @@ use crate::address_book::Id;
 
 /// What to do with saved providers when the app launches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[allow(clippy::enum_variant_names)]
 pub enum StartupMode {
     /// Don't connect anything automatically.
     #[default]

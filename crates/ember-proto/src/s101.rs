@@ -349,7 +349,11 @@ mod tests {
         for &b in &buf {
             reg ^= b as u16;
             for _ in 0..8 {
-                reg = if reg & 1 != 0 { (reg >> 1) ^ 0x8408 } else { reg >> 1 };
+                reg = if reg & 1 != 0 {
+                    (reg >> 1) ^ 0x8408
+                } else {
+                    reg >> 1
+                };
             }
         }
         assert_eq!(reg, 0xF0B8);

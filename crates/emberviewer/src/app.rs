@@ -293,7 +293,11 @@ impl App {
                                         provider: provider.clone(),
                                         label: e.label(),
                                         path: path_string(&p),
-                                        value: e.value.as_ref().map(format_value).unwrap_or_default(),
+                                        value: e
+                                            .value
+                                            .as_ref()
+                                            .map(format_value)
+                                            .unwrap_or_default(),
                                     });
                                 }
                             }
@@ -330,7 +334,11 @@ impl App {
         let path = self.settings.log_file.trim();
         if !path.is_empty() {
             use std::io::Write;
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
                 let _ = writeln!(
                     f,
                     "{} [{}] {} ({}) = {}",
@@ -352,7 +360,12 @@ fn timestamp() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    format!("{:02}:{:02}:{:02}", (secs / 3600) % 24, (secs / 60) % 60, secs % 60)
+    format!(
+        "{:02}:{:02}:{:02}",
+        (secs / 3600) % 24,
+        (secs / 60) % 60,
+        secs % 60
+    )
 }
 
 impl eframe::App for App {
@@ -560,7 +573,8 @@ impl App {
                 };
             }
             Some(SidebarAction::Move { node, into }) => {
-                if self.book.move_node(node, into) {
+                let moved = self.book.move_node(node, into);
+                if moved {
                     let _ = self.book.save();
                 }
             }
@@ -584,8 +598,8 @@ impl App {
                 if !filter.is_empty() && !folder_matches(folder, filter) {
                     return;
                 }
-                let mut header = egui::CollapsingHeader::new(format!("📁 {}", folder.name))
-                    .default_open(true);
+                let mut header =
+                    egui::CollapsingHeader::new(format!("📁 {}", folder.name)).default_open(true);
                 if !filter.is_empty() {
                     header = header.open(Some(true));
                 }
@@ -796,14 +810,16 @@ impl App {
                         };
                         match editing {
                             Some(id) => {
-                                self.book.update_provider(id, name.clone(), host, port, None);
+                                self.book
+                                    .update_provider(id, name.clone(), host, port, None);
                                 // Reflect a new display name on an open tab.
                                 if let Some(s) = self.sessions.get_mut(&id) {
                                     s.name = name;
                                 }
                             }
                             None => {
-                                self.book.add_provider(self.add.parent, name, host, port, None);
+                                self.book
+                                    .add_provider(self.add.parent, name, host, port, None);
                             }
                         }
                         if let Err(e) = self.book.save() {
@@ -909,7 +925,10 @@ impl App {
                 });
                 ui.separator();
                 changed |= ui
-                    .checkbox(&mut self.settings.show_descriptions, "Show descriptions in tree")
+                    .checkbox(
+                        &mut self.settings.show_descriptions,
+                        "Show descriptions in tree",
+                    )
                     .changed();
                 changed |= ui
                     .checkbox(
@@ -968,7 +987,11 @@ impl App {
             .open(&mut open)
             .default_width(360.0)
             .show(ctx, |ui| {
-                let found = self.discovery.as_ref().map(|d| d.sorted()).unwrap_or_default();
+                let found = self
+                    .discovery
+                    .as_ref()
+                    .map(|d| d.sorted())
+                    .unwrap_or_default();
                 ui.horizontal(|ui| {
                     ui.spinner();
                     ui.label(format!("Browsing _ember._tcp … {} found", found.len()));
@@ -977,22 +1000,28 @@ impl App {
                 if found.is_empty() {
                     ui.weak("No providers found yet. Ensure they're on this network.");
                 }
-                egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
-                    for d in &found {
-                        ui.horizontal(|ui| {
-                            let exists = self.book_has_host(&d.host, d.port);
-                            if ui
-                                .add_enabled(!exists, egui::Button::new("Add"))
-                                .on_hover_text(if exists { "already in address book" } else { "" })
-                                .clicked()
-                            {
-                                to_add = Some(d.clone());
-                            }
-                            ui.label(format!("{}  ", d.display_name()));
-                            ui.weak(format!("{}:{}", d.host, d.port));
-                        });
-                    }
-                });
+                egui::ScrollArea::vertical()
+                    .max_height(300.0)
+                    .show(ui, |ui| {
+                        for d in &found {
+                            ui.horizontal(|ui| {
+                                let exists = self.book_has_host(&d.host, d.port);
+                                if ui
+                                    .add_enabled(!exists, egui::Button::new("Add"))
+                                    .on_hover_text(if exists {
+                                        "already in address book"
+                                    } else {
+                                        ""
+                                    })
+                                    .clicked()
+                                {
+                                    to_add = Some(d.clone());
+                                }
+                                ui.label(format!("{}  ", d.display_name()));
+                                ui.weak(format!("{}:{}", d.host, d.port));
+                            });
+                        }
+                    });
             });
         self.show_discovery = open;
         if !open {
@@ -1007,17 +1036,23 @@ impl App {
 
     /// Whether a provider with this host:port already exists in the book.
     fn book_has_host(&self, host: &str, port: u16) -> bool {
-        self.book.iter().any(|(_, n)| {
-            matches!(n, Node::Provider(p) if p.host == host && p.port == port)
-        })
+        self.book
+            .iter()
+            .any(|(_, n)| matches!(n, Node::Provider(p) if p.host == host && p.port == port))
     }
 
     /// Right-side vertical meter for the active session's selected parameter.
     fn meter_panel(&mut self, ui: &mut egui::Ui) {
         let Some(id) = self.active else { return };
-        let Some(session) = self.sessions.get_mut(&id) else { return };
-        let Some(path) = session.selected.clone() else { return };
-        let Some(entry) = session.tree.get(&path).cloned() else { return };
+        let Some(session) = self.sessions.get_mut(&id) else {
+            return;
+        };
+        let Some(path) = session.selected.clone() else {
+            return;
+        };
+        let Some(entry) = session.tree.get(&path).cloned() else {
+            return;
+        };
         if !is_meterable(&entry) {
             return;
         }
@@ -1041,7 +1076,9 @@ impl App {
     /// Render each popped-out meter as its own (optionally always-on-top) window.
     fn popped_meters(&mut self, ctx: &egui::Context) {
         let Some(id) = self.active else { return };
-        let Some(session) = self.sessions.get_mut(&id) else { return };
+        let Some(session) = self.sessions.get_mut(&id) else {
+            return;
+        };
         let items: Vec<(usize, Vec<u32>, bool)> = session
             .popped
             .iter()
@@ -1051,7 +1088,9 @@ impl App {
         let mut to_close = Vec::new();
         let mut to_toggle = Vec::new();
         for (i, path, aot) in items {
-            let Some(entry) = session.tree.get(&path).cloned() else { continue };
+            let Some(entry) = session.tree.get(&path).cloned() else {
+                continue;
+            };
             let range = meter_range(&entry, &mut session.meter_range);
             let value = entry.value.as_ref().and_then(value_f64);
             let title = entry.label();
@@ -1075,7 +1114,11 @@ impl App {
                             ui.label(format!("{v:.3}"));
                         }
                         resp.context_menu(|ui| {
-                            let l = if aot { "Unpin (always on top)" } else { "Always on top" };
+                            let l = if aot {
+                                "Unpin (always on top)"
+                            } else {
+                                "Always on top"
+                            };
                             if ui.button(l).clicked() {
                                 toggle = true;
                                 ui.close();
@@ -1205,7 +1248,14 @@ impl App {
                     let mut row = 0usize;
                     for root in &roots {
                         render_filtered(
-                            ui, session, root, allowed, &opts, true, &mut row, &mut commands,
+                            ui,
+                            session,
+                            root,
+                            allowed,
+                            &opts,
+                            true,
+                            &mut row,
+                            &mut commands,
                             &mut visible,
                         );
                     }
@@ -1213,7 +1263,14 @@ impl App {
                     let mut row = 0usize;
                     for root in &roots {
                         render_entry(
-                            ui, session, root, &opts, true, &mut row, &mut commands, &mut visible,
+                            ui,
+                            session,
+                            root,
+                            &opts,
+                            true,
+                            &mut row,
+                            &mut commands,
+                            &mut visible,
                         );
                     }
                 }
@@ -1241,6 +1298,7 @@ impl App {
 
 /// Recursively render a tree entry; pushes network commands to `commands` and
 /// records on-screen parameter paths in `visible`.
+#[allow(clippy::too_many_arguments)]
 fn render_entry(
     ui: &mut egui::Ui,
     session: &mut Session,
@@ -1259,11 +1317,8 @@ fn render_entry(
     if entry.kind.is_expandable() {
         let is_open = session.open.get(path).copied().unwrap_or(false);
         let id = ui.make_persistent_id(("node", path));
-        let header = egui::collapsing_header::CollapsingState::load_with_default_open(
-            ui.ctx(),
-            id,
-            false,
-        );
+        let header =
+            egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
         let next_open = header.is_open();
         let mut heading = egui::RichText::new(node_label(&entry, opts));
         if !eff_online {
@@ -1289,6 +1344,11 @@ fn render_entry(
                     let bases = m.label_paths.clone();
                     for base in &bases {
                         fetch_label_subtree(session, base, commands);
+                    }
+                    // Eagerly fetch the parameters-location node (gain/name/type
+                    // params) so the Matrix Params subtree populates on open.
+                    if let Some(ploc) = m.params_location.clone() {
+                        fetch_label_subtree(session, &ploc, commands);
                     }
                     render_matrix(ui, &entry, m, opts, commands);
                 } else if let Some(f) = &entry.function {
@@ -1356,7 +1416,11 @@ fn render_parameter(
                 ("ro", egui::Color32::from_gray(140))
             };
             ui.label(egui::RichText::new(badge).monospace().small().color(color))
-                .on_hover_text(if entry.is_writable() { "writable" } else { "read-only" });
+                .on_hover_text(if entry.is_writable() {
+                    "writable"
+                } else {
+                    "read-only"
+                });
 
             // Clicking the name selects the parameter (drives the meter panel).
             let name = ui
@@ -1368,7 +1432,11 @@ fn render_parameter(
             name.context_menu(|ui| {
                 context_copy(ui, &entry.path, &entry.identifier);
                 ui.separator();
-                let l = if logging { "Stop logging" } else { "Log changes" };
+                let l = if logging {
+                    "Stop logging"
+                } else {
+                    "Log changes"
+                };
                 if ui.button(l).clicked() {
                     if logging {
                         session.logged.remove(&entry.path);
@@ -1393,8 +1461,7 @@ fn render_parameter(
                 ui.add_space(14.0);
                 if entry.param_type == Some(glow::parameter_type::TRIGGER) {
                     if ui.button("Fire").clicked() {
-                        commands
-                            .push(NetCommand::SetValue(entry.path.clone(), Value::Integer(0)));
+                        commands.push(NetCommand::SetValue(entry.path.clone(), Value::Integer(0)));
                     }
                 } else if entry.is_writable() {
                     editor(ui, session, entry, opts, commands);
@@ -1410,15 +1477,22 @@ fn render_parameter(
     // Paint selection highlight or a faint stripe behind the row.
     let row_rect = egui::Rect::from_x_y_ranges(ui.max_rect().x_range(), resp.rect.y_range());
     if selected {
-        ui.painter()
-            .set(bg, egui::Shape::rect_filled(row_rect, 0.0, ui.visuals().selection.bg_fill.gamma_multiply(0.35)));
+        ui.painter().set(
+            bg,
+            egui::Shape::rect_filled(
+                row_rect,
+                0.0,
+                ui.visuals().selection.bg_fill.gamma_multiply(0.35),
+            ),
+        );
     } else if *row % 2 == 1 {
         let stripe = if ui.visuals().dark_mode {
             egui::Color32::from_white_alpha(8)
         } else {
             egui::Color32::from_black_alpha(8)
         };
-        ui.painter().set(bg, egui::Shape::rect_filled(row_rect, 0.0, stripe));
+        ui.painter()
+            .set(bg, egui::Shape::rect_filled(row_rect, 0.0, stripe));
     }
     *row += 1;
 }
@@ -1437,10 +1511,14 @@ fn editor(
             // Set true / Set false / Pulse (true now, false after the hold time).
             let on = *b;
             ui.label(if on { "true" } else { "false" });
-            if ui.button("Pulse").on_hover_text("Set true, then false").clicked() {
+            if ui
+                .button("Pulse")
+                .on_hover_text("Set true, then false")
+                .clicked()
+            {
                 commands.push(NetCommand::SetValue(path.clone(), Value::Boolean(true)));
-                let deadline = std::time::Instant::now()
-                    + std::time::Duration::from_millis(opts.pulse_ms);
+                let deadline =
+                    std::time::Instant::now() + std::time::Duration::from_millis(opts.pulse_ms);
                 session.pulses.insert(path.clone(), deadline);
             }
             if ui.add_enabled(on, egui::Button::new("Set false")).clicked() {
@@ -1464,7 +1542,10 @@ fn editor(
                     .show_ui(ui, |ui| {
                         for ent in entry.enum_entries.iter().filter(|e| !e.hidden) {
                             let mut sel = i;
-                            if ui.selectable_value(&mut sel, ent.value, &ent.label).clicked() {
+                            if ui
+                                .selectable_value(&mut sel, ent.value, &ent.label)
+                                .clicked()
+                            {
                                 commands.push(NetCommand::SetValue(
                                     path.clone(),
                                     Value::Integer(ent.value),
@@ -1480,9 +1561,7 @@ fn editor(
                 let suffix = format_suffix(entry);
                 let resp = ui.add(
                     egui::Slider::new(&mut v, *lo..=*hi)
-                        .custom_formatter(move |n, _| {
-                            format!("{}{}", n / factor, suffix)
-                        }),
+                        .custom_formatter(move |n, _| format!("{}{}", n / factor, suffix)),
                 );
                 if resp.changed() {
                     commands.push(NetCommand::SetValue(path, Value::Integer(v)));
@@ -1494,11 +1573,14 @@ fn editor(
             }
         }
         Some(Value::Real(r)) => {
-            if let (Some(Value::Real(lo)), Some(Value::Real(hi))) =
-                (&entry.minimum, &entry.maximum)
+            if let (Some(Value::Real(lo)), Some(Value::Real(hi))) = (&entry.minimum, &entry.maximum)
             {
                 let mut v = r.to_f64();
-                let resp = ui.add(egui::Slider::new(&mut v, lo.to_f64()..=hi.to_f64()));
+                let suffix = format_suffix(entry);
+                let resp = ui.add(
+                    egui::Slider::new(&mut v, lo.to_f64()..=hi.to_f64())
+                        .custom_formatter(move |n, _| format!("{n:.3}{suffix}")),
+                );
                 if resp.changed() {
                     commands.push(NetCommand::SetValue(path, Value::Real(v.into())));
                 }
@@ -1611,7 +1693,9 @@ fn meter_range(
         }
     }
     let v = entry.value.as_ref().and_then(value_f64).unwrap_or(0.0);
-    let range = tracked.entry(entry.path.clone()).or_insert((v - 0.5, v + 0.5));
+    let range = tracked
+        .entry(entry.path.clone())
+        .or_insert((v - 0.5, v + 0.5));
     range.0 = range.0.min(v);
     range.1 = range.1.max(v);
     if range.1 - range.0 < 1e-6 {
@@ -1664,7 +1748,10 @@ fn draw_vmeter(
 /// Paint a small filled status dot inline (drawn, not a font glyph, so it always
 /// renders regardless of the available fonts).
 fn paint_dot(ui: &mut egui::Ui, color: egui::Color32) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, ui.spacing().interact_size.y), egui::Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(12.0, ui.spacing().interact_size.y),
+        egui::Sense::hover(),
+    );
     ui.painter().circle_filled(rect.center(), 4.5, color);
 }
 
@@ -1746,7 +1833,10 @@ fn compute_filter_set(tree: &TreeModel, query: &str) -> HashSet<Vec<u32>> {
     }
     // Descendants of any match.
     for entry in tree.entries.keys() {
-        if matches.iter().any(|m| entry.len() > m.len() && entry.starts_with(m)) {
+        if matches
+            .iter()
+            .any(|m| entry.len() > m.len() && entry.starts_with(m))
+        {
             allowed.insert(entry.clone());
         }
     }
@@ -1755,6 +1845,7 @@ fn compute_filter_set(tree: &TreeModel, query: &str) -> HashSet<Vec<u32>> {
 
 /// Render a filtered tree: only `allowed` paths, always expanded. Records
 /// visible parameter paths so subscriptions still track what's on screen.
+#[allow(clippy::too_many_arguments)]
 fn render_filtered(
     ui: &mut egui::Ui,
     session: &mut Session,
@@ -1806,16 +1897,21 @@ fn render_matrix(
         x if x == glow::matrix_type::N_TO_N => "N:N",
         _ => "?",
     };
-    ui.label(format!("Matrix {}×{} ({kind})", m.target_count, m.source_count));
+    ui.label(format!(
+        "Matrix {}×{} ({kind})",
+        m.target_count, m.source_count
+    ));
     let (col_letter, row_letter) = if opts.matrix_targets_on_top {
         ("targets", "sources")
     } else {
         ("sources", "targets")
     };
     ui.label(
-        egui::RichText::new(format!("columns (top) = {col_letter}, rows (left) = {row_letter}"))
-            .small()
-            .weak(),
+        egui::RichText::new(format!(
+            "columns (top) = {col_letter}, rows (left) = {row_letter}"
+        ))
+        .small()
+        .weak(),
     );
 
     // Signal sets, augmented with any signals referenced by connections so a
@@ -1840,8 +1936,16 @@ fn render_matrix(
     } else {
         (&m.source_labels, &m.target_labels)
     };
-    let col_kind = if opts.matrix_targets_on_top { "target" } else { "source" };
-    let row_kind = if opts.matrix_targets_on_top { "source" } else { "target" };
+    let col_kind = if opts.matrix_targets_on_top {
+        "target"
+    } else {
+        "source"
+    };
+    let row_kind = if opts.matrix_targets_on_top {
+        "source"
+    } else {
+        "target"
+    };
 
     let dark = ui.visuals().dark_mode;
     let (light_row, dark_row) = if dark {
@@ -1868,12 +1972,12 @@ fn render_matrix(
         );
         resp
     };
-    let head_tip = |labels: &std::collections::BTreeMap<u32, String>, kind: &str, n: u32| {
-        match labels.get(&n) {
+    let head_tip =
+        |labels: &std::collections::BTreeMap<u32, String>, kind: &str, n: u32| match labels.get(&n)
+        {
             Some(name) => format!("{kind} {n}: {name}"),
             None => format!("{kind} {n}"),
-        }
-    };
+        };
 
     let avail_w = ui.available_width();
     egui::Resize::default()
@@ -1881,138 +1985,164 @@ fn render_matrix(
         .default_size([avail_w.min(720.0), 360.0])
         .min_height(80.0)
         .show(ui, |ui| {
-        egui::ScrollArea::both()
-        .id_salt(("mscroll", &path))
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(1.0, 1.0);
-            // Resizable row-label column width (persisted by egui/eframe).
-            let lw_id = egui::Id::new(("matrix_label_w", &path));
-            let mut label_w = ui.ctx().data_mut(|d| d.get_persisted::<f32>(lw_id)).unwrap_or(96.0);
+            egui::ScrollArea::both()
+                .id_salt(("mscroll", &path))
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(1.0, 1.0);
+                    // Resizable row-label column width (persisted by egui/eframe).
+                    let lw_id = egui::Id::new(("matrix_label_w", &path));
+                    let mut label_w = ui
+                        .ctx()
+                        .data_mut(|d| d.get_persisted::<f32>(lw_id))
+                        .unwrap_or(96.0);
 
-            // Draw a left row-label cell (signal number + name), clipped to width.
-            let row_label = |ui: &mut egui::Ui, w: f32, num: u32, name: Option<&String>| {
-                let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, CELL), egui::Sense::hover());
-                let text = match name {
-                    Some(n) => format!("{num} {n}"),
-                    None => num.to_string(),
-                };
-                // painter_at clips the text to the cell, so long names truncate.
-                ui.painter_at(rect).text(
-                    egui::pos2(rect.left() + 2.0, rect.center().y),
-                    egui::Align2::LEFT_CENTER,
-                    text,
-                    egui::FontId::proportional(10.0),
-                    ui.visuals().text_color(),
-                );
-                resp
-            };
-
-            // Resizable column-header height. Default tall enough to show rotated
-            // names when the columns have labels (else compact). Only the user's
-            // drag is persisted — otherwise the height-18 captured before the
-            // labels arrive would stick and the names would never rotate in.
-            let hh_id = egui::Id::new(("matrix_header_h", &path));
-            let default_hh = if col_labels.is_empty() { 18.0 } else { 76.0 };
-            let mut header_h = ui
-                .ctx()
-                .data_mut(|d| d.get_persisted::<f32>(hh_id))
-                .unwrap_or(default_hh);
-
-            ui.horizontal(|ui| {
-                // Corner doubles as a 2D resize handle: x → label width, y → header height.
-                let (crect, cresp) =
-                    ui.allocate_exact_size(egui::vec2(label_w, header_h), egui::Sense::drag());
-                ui.painter().text(
-                    crect.right_bottom() - egui::vec2(2.0, 1.0),
-                    egui::Align2::RIGHT_BOTTOM,
-                    format!("{row_kind}\\{col_kind}"),
-                    egui::FontId::proportional(9.0),
-                    ui.visuals().weak_text_color(),
-                );
-                if cresp.dragged() {
-                    label_w = (label_w + cresp.drag_delta().x).clamp(24.0, 480.0);
-                    header_h = (header_h + cresp.drag_delta().y).clamp(18.0, 240.0);
-                    ui.ctx().data_mut(|d| {
-                        d.insert_persisted(lw_id, label_w);
-                        d.insert_persisted(hh_id, header_h);
-                    });
-                }
-                cresp
-                    .on_hover_cursor(egui::CursorIcon::ResizeNwSe)
-                    .on_hover_text("drag to resize the label column / header height");
-                for &c in col_signals {
-                    let (rect, resp) =
-                        ui.allocate_exact_size(egui::vec2(CELL, header_h), egui::Sense::hover());
-                    let name = col_labels.get(&c);
-                    if header_h > 24.0 && name.is_some() {
-                        // Rotated column name reading bottom-to-top.
-                        let text = format!("{c} {}", name.unwrap());
-                        let galley = ui.painter().layout_no_wrap(
+                    // Draw a left row-label cell (signal number + name), clipped to width.
+                    let row_label = |ui: &mut egui::Ui, w: f32, num: u32, name: Option<&String>| {
+                        let (rect, resp) =
+                            ui.allocate_exact_size(egui::vec2(w, CELL), egui::Sense::hover());
+                        let text = match name {
+                            Some(n) => format!("{num} {n}"),
+                            None => num.to_string(),
+                        };
+                        // painter_at clips the text to the cell, so long names truncate.
+                        ui.painter_at(rect).text(
+                            egui::pos2(rect.left() + 2.0, rect.center().y),
+                            egui::Align2::LEFT_CENTER,
                             text,
                             egui::FontId::proportional(10.0),
                             ui.visuals().text_color(),
                         );
-                        let mut shape = egui::epaint::TextShape::new(
-                            egui::pos2(rect.center().x - galley.size().y / 2.0, rect.bottom() - 2.0),
-                            galley,
-                            ui.visuals().text_color(),
+                        resp
+                    };
+
+                    // Resizable column-header height. Default tall enough to show rotated
+                    // names when the columns have labels (else compact). Only the user's
+                    // drag is persisted — otherwise the height-18 captured before the
+                    // labels arrive would stick and the names would never rotate in.
+                    let hh_id = egui::Id::new(("matrix_header_h", &path));
+                    let default_hh = if col_labels.is_empty() { 18.0 } else { 76.0 };
+                    let mut header_h = ui
+                        .ctx()
+                        .data_mut(|d| d.get_persisted::<f32>(hh_id))
+                        .unwrap_or(default_hh);
+
+                    ui.horizontal(|ui| {
+                        // Corner doubles as a 2D resize handle: x → label width, y → header height.
+                        let (crect, cresp) = ui.allocate_exact_size(
+                            egui::vec2(label_w, header_h),
+                            egui::Sense::drag(),
                         );
-                        shape.angle = -std::f32::consts::FRAC_PI_2;
-                        ui.painter_at(rect).add(shape);
-                    } else {
-                        ui.painter_at(rect).text(
-                            rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            c.to_string(),
+                        ui.painter().text(
+                            crect.right_bottom() - egui::vec2(2.0, 1.0),
+                            egui::Align2::RIGHT_BOTTOM,
+                            format!("{row_kind}\\{col_kind}"),
                             egui::FontId::proportional(9.0),
                             ui.visuals().weak_text_color(),
                         );
-                    }
-                    resp.on_hover_text(head_tip(col_labels, col_kind, c));
-                }
-            });
-            for (ri, &r) in row_signals.iter().enumerate() {
-                ui.horizontal(|ui| {
-                    row_label(ui, label_w, r, row_labels.get(&r))
-                        .on_hover_text(head_tip(row_labels, row_kind, r));
-                    let row_bg = if ri % 2 == 0 { light_row } else { dark_row };
-                    for &c in col_signals {
-                        let (t, s) = if opts.matrix_targets_on_top { (c, r) } else { (r, c) };
-                        let on = m.connections.get(&t).is_some_and(|set| set.contains(&s));
-                        let (rect, resp) =
-                            ui.allocate_exact_size(egui::vec2(CELL, CELL), egui::Sense::click());
-                        let fill = if on {
-                            accent
-                        } else if resp.hovered() {
-                            ui.visuals().widgets.hovered.bg_fill
-                        } else {
-                            row_bg
-                        };
-                        ui.painter().rect_filled(rect, 2.0, fill);
-                        let tname = m.target_labels.get(&t).map(|n| format!(" ({n})")).unwrap_or_default();
-                        let sname = m.source_labels.get(&s).map(|n| format!(" ({n})")).unwrap_or_default();
-                        let resp = resp
-                            .on_hover_text(format!("target {t}{tname} <- source {s}{sname}"));
-                        if resp.clicked() {
-                            let operation = if on {
-                                glow::connection_operation::DISCONNECT
-                            } else if m.mtype == glow::matrix_type::N_TO_N {
-                                glow::connection_operation::CONNECT
-                            } else {
-                                glow::connection_operation::ABSOLUTE
-                            };
-                            commands.push(NetCommand::MatrixConnect {
-                                path: path.clone(),
-                                target: t,
-                                sources: vec![s],
-                                operation,
+                        if cresp.dragged() {
+                            label_w = (label_w + cresp.drag_delta().x).clamp(24.0, 480.0);
+                            header_h = (header_h + cresp.drag_delta().y).clamp(18.0, 240.0);
+                            ui.ctx().data_mut(|d| {
+                                d.insert_persisted(lw_id, label_w);
+                                d.insert_persisted(hh_id, header_h);
                             });
                         }
+                        cresp
+                            .on_hover_cursor(egui::CursorIcon::ResizeNwSe)
+                            .on_hover_text("drag to resize the label column / header height");
+                        for &c in col_signals {
+                            let (rect, resp) = ui.allocate_exact_size(
+                                egui::vec2(CELL, header_h),
+                                egui::Sense::hover(),
+                            );
+                            let name = col_labels.get(&c).filter(|_| header_h > 24.0);
+                            if let Some(n) = name {
+                                // Rotated column name reading bottom-to-top.
+                                let text = format!("{c} {n}");
+                                let galley = ui.painter().layout_no_wrap(
+                                    text,
+                                    egui::FontId::proportional(10.0),
+                                    ui.visuals().text_color(),
+                                );
+                                let mut shape = egui::epaint::TextShape::new(
+                                    egui::pos2(
+                                        rect.center().x - galley.size().y / 2.0,
+                                        rect.bottom() - 2.0,
+                                    ),
+                                    galley,
+                                    ui.visuals().text_color(),
+                                );
+                                shape.angle = -std::f32::consts::FRAC_PI_2;
+                                ui.painter_at(rect).add(shape);
+                            } else {
+                                ui.painter_at(rect).text(
+                                    rect.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    c.to_string(),
+                                    egui::FontId::proportional(9.0),
+                                    ui.visuals().weak_text_color(),
+                                );
+                            }
+                            resp.on_hover_text(head_tip(col_labels, col_kind, c));
+                        }
+                    });
+                    for (ri, &r) in row_signals.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            row_label(ui, label_w, r, row_labels.get(&r))
+                                .on_hover_text(head_tip(row_labels, row_kind, r));
+                            let row_bg = if ri % 2 == 0 { light_row } else { dark_row };
+                            for &c in col_signals {
+                                let (t, s) = if opts.matrix_targets_on_top {
+                                    (c, r)
+                                } else {
+                                    (r, c)
+                                };
+                                let on = m.connections.get(&t).is_some_and(|set| set.contains(&s));
+                                let (rect, resp) = ui.allocate_exact_size(
+                                    egui::vec2(CELL, CELL),
+                                    egui::Sense::click(),
+                                );
+                                let fill = if on {
+                                    accent
+                                } else if resp.hovered() {
+                                    ui.visuals().widgets.hovered.bg_fill
+                                } else {
+                                    row_bg
+                                };
+                                ui.painter().rect_filled(rect, 2.0, fill);
+                                let tname = m
+                                    .target_labels
+                                    .get(&t)
+                                    .map(|n| format!(" ({n})"))
+                                    .unwrap_or_default();
+                                let sname = m
+                                    .source_labels
+                                    .get(&s)
+                                    .map(|n| format!(" ({n})"))
+                                    .unwrap_or_default();
+                                let resp = resp.on_hover_text(format!(
+                                    "target {t}{tname} <- source {s}{sname}"
+                                ));
+                                if resp.clicked() {
+                                    let operation = if on {
+                                        glow::connection_operation::DISCONNECT
+                                    } else if m.mtype == glow::matrix_type::N_TO_N {
+                                        glow::connection_operation::CONNECT
+                                    } else {
+                                        glow::connection_operation::ABSOLUTE
+                                    };
+                                    commands.push(NetCommand::MatrixConnect {
+                                        path: path.clone(),
+                                        target: t,
+                                        sources: vec![s],
+                                        operation,
+                                    });
+                                }
+                            }
+                        });
                     }
                 });
-            }
-        });
         });
 }
 
@@ -2103,9 +2233,10 @@ fn parse_value(s: &str, ptype: i32) -> Value {
     match ptype {
         x if x == pt::INTEGER || x == pt::ENUM => Value::Integer(t.parse().unwrap_or(0)),
         x if x == pt::REAL => Value::Real(t.parse::<f64>().unwrap_or(0.0).into()),
-        x if x == pt::BOOLEAN => {
-            Value::Boolean(matches!(t.to_lowercase().as_str(), "true" | "1" | "yes" | "on"))
-        }
+        x if x == pt::BOOLEAN => Value::Boolean(matches!(
+            t.to_lowercase().as_str(),
+            "true" | "1" | "yes" | "on"
+        )),
         _ => Value::String(s.to_string()),
     }
 }
@@ -2149,7 +2280,10 @@ fn sorted_paths(tree: &TreeModel, paths: &[Vec<u32>], order: OrderBy) -> Vec<Vec
     out
 }
 
-fn key_of(entry: Option<&crate::model::Entry>, f: impl Fn(&crate::model::Entry) -> String) -> String {
+fn key_of(
+    entry: Option<&crate::model::Entry>,
+    f: impl Fn(&crate::model::Entry) -> String,
+) -> String {
     entry.map(f).unwrap_or_default()
 }
 
@@ -2162,13 +2296,10 @@ fn text_commit_editor(
     parse: impl Fn(&str) -> Option<Value>,
 ) {
     let path = entry.path.clone();
-    let buf = session.edits.entry(path.clone()).or_insert_with(|| {
-        entry
-            .value
-            .as_ref()
-            .map(format_value)
-            .unwrap_or_default()
-    });
+    let buf = session
+        .edits
+        .entry(path.clone())
+        .or_insert_with(|| entry.value.as_ref().map(format_value).unwrap_or_default());
     let resp = ui.add(egui::TextEdit::singleline(buf).desired_width(140.0));
     let commit = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
     if commit {

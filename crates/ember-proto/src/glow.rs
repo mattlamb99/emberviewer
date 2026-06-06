@@ -909,9 +909,9 @@ impl Root {
 
     /// Build a root `getDirectory` request document.
     pub fn root_get_directory() -> Self {
-        Root::from_element(RootElement::Element(Element::Command(Command::get_directory(
-            None,
-        ))))
+        Root::from_element(RootElement::Element(Element::Command(
+            Command::get_directory(None),
+        )))
     }
 
     /// Build a `getDirectory` request for the node at `path`.
@@ -990,7 +990,12 @@ impl Root {
 
     /// Build a matrix crosspoint change for `target` ← `sources` with `operation`
     /// (see [`connection_operation`]).
-    pub fn matrix_connect(path: &[u32], target: u32, sources: &[u32], operation: Integer32) -> Self {
+    pub fn matrix_connect(
+        path: &[u32],
+        target: u32,
+        sources: &[u32],
+        operation: Integer32,
+    ) -> Self {
         let connection = Connection {
             target: target as Integer32,
             sources: Some(RelativeOid::from_arcs(sources)),
@@ -1021,7 +1026,9 @@ impl Root {
         let qf = QualifiedFunction {
             path: RelativeOid::from_arcs(path),
             contents: None,
-            children: Some(ElementCollection(vec![ElementEntry(Element::Command(command))])),
+            children: Some(ElementCollection(vec![ElementEntry(Element::Command(
+                command,
+            ))])),
         };
         Root::from_element(RootElement::QualifiedFunction(qf))
     }
@@ -1112,6 +1119,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::approx_constant)] // exercising REAL round-trips, not π
     fn real_roundtrips() {
         let cases = [
             0.0,

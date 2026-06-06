@@ -57,9 +57,7 @@ impl Discovery {
                         .iter()
                         .next()
                         .map(|a| a.to_string())
-                        .unwrap_or_else(|| {
-                            info.get_hostname().trim_end_matches('.').to_string()
-                        });
+                        .unwrap_or_else(|| info.get_hostname().trim_end_matches('.').to_string());
                     let d = Discovered {
                         instance: info.get_fullname().to_string(),
                         host,
@@ -69,9 +67,7 @@ impl Discovery {
                     changed = true;
                 }
                 ServiceEvent::ServiceRemoved(_ty, fullname) => {
-                    if self.found.remove(&fullname).is_some() {
-                        changed = true;
-                    }
+                    changed |= self.found.remove(&fullname).is_some();
                 }
                 _ => {}
             }
@@ -82,7 +78,7 @@ impl Discovery {
     /// Discovered providers, sorted by display name.
     pub fn sorted(&self) -> Vec<Discovered> {
         let mut v: Vec<Discovered> = self.found.values().cloned().collect();
-        v.sort_by(|a, b| a.display_name().cmp(&b.display_name()));
+        v.sort_by_key(|a| a.display_name());
         v
     }
 }

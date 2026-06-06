@@ -49,6 +49,12 @@ pub struct MatrixInfo {
     pub source_labels: BTreeMap<u32, String>,
     /// `labels[].basePath` nodes to fetch for names (RELATIVE-OID arcs).
     pub label_paths: Vec<Vec<u32>>,
+    /// `parametersLocation` basePath (RELATIVE-OID arcs), where per-crosspoint /
+    /// per-signal / matrix-level parameters (gain, name, …) live, if advertised.
+    pub params_location: Option<Vec<u32>>,
+    /// `gainParameterNumber`: the sub-number of the gain parameter within a
+    /// crosspoint's parameter node, if the matrix advertises one.
+    pub gain_param: Option<i32>,
 }
 
 /// One enumeration choice for an enum parameter.
@@ -238,9 +244,7 @@ impl TreeModel {
                 qm.sources,
                 qm.connections,
             ),
-            RootElement::QualifiedFunction(qf) => {
-                self.ingest_function(qf.path.arcs(), qf.contents)
-            }
+            RootElement::QualifiedFunction(qf) => self.ingest_function(qf.path.arcs(), qf.contents),
         }
     }
 
@@ -410,11 +414,14 @@ impl TreeModel {
             }
             // Label sub-node base paths (resolved to source/target names later).
             if let Some(labels) = &c.labels {
-                info.label_paths = labels
-                    .0
-                    .iter()
-                    .map(|l| l.0.base_path.arcs())
-                    .collect();
+                info.label_paths = labels.0.iter().map(|l| l.0.base_path.arcs()).collect();
+            }
+            // Where the matrix's parameters (gain etc.) live.
+            if let Some(glow::ParametersLocation::BasePath(p)) = &c.parameters_location {
+                info.params_location = Some(p.arcs());
+            }
+            if let Some(g) = c.gain_parameter_number {
+                info.gain_param = Some(g);
             }
         }
         // Explicit target/source signal numbers (sparse on real devices).
@@ -442,7 +449,9 @@ impl TreeModel {
                     .unwrap_or_default()
                     .into_iter()
                     .collect();
-                let op = conn.operation.unwrap_or(glow::connection_operation::ABSOLUTE);
+                let op = conn
+                    .operation
+                    .unwrap_or(glow::connection_operation::ABSOLUTE);
                 let set = info.connections.entry(target).or_default();
                 match op {
                     glow::connection_operation::CONNECT => set.extend(srcs),
@@ -468,8 +477,7 @@ impl TreeModel {
                 e.description = c.description;
             }
             let map_items = |td: glow::TupleDescription| -> Vec<TupleItem> {
-                td.0
-                    .into_iter()
+                td.0.into_iter()
                     .map(|item| TupleItem {
                         name: item.0.name.unwrap_or_default(),
                         ptype: item.0.r#type,
@@ -504,9 +512,13 @@ impl TreeModel {
             let mut targets = BTreeMap::new();
             let mut sources = BTreeMap::new();
             for base in &label_paths {
-                let Some(base_entry) = self.entries.get(base) else { continue };
+                let Some(base_entry) = self.entries.get(base) else {
+                    continue;
+                };
                 for axis_path in base_entry.children.clone() {
-                    let Some(axis) = self.entries.get(&axis_path) else { continue };
+                    let Some(axis) = self.entries.get(&axis_path) else {
+                        continue;
+                    };
                     let id = axis.identifier.to_lowercase();
                     let map = if id.contains("target") {
                         &mut targets
@@ -516,7 +528,9 @@ impl TreeModel {
                         continue;
                     };
                     for pp in axis.children.clone() {
-                        let Some(pe) = self.entries.get(&pp) else { continue };
+                        let Some(pe) = self.entries.get(&pp) else {
+                            continue;
+                        };
                         if let Some(Value::String(name)) = &pe.value {
                             if let Some(num) = pp.last() {
                                 map.insert(*num, name.clone());
@@ -554,7 +568,8 @@ impl TreeModel {
     /// Insert the entry if missing and link it under its parent.
     fn upsert(&mut self, path: Vec<u32>, kind: Kind) {
         if !self.entries.contains_key(&path) {
-            self.entries.insert(path.clone(), Entry::new(path.clone(), kind));
+            self.entries
+                .insert(path.clone(), Entry::new(path.clone(), kind));
             self.link_to_parent(&path);
         }
     }
@@ -590,7 +605,8 @@ fn minmax_to_value(m: glow::MinMax) -> Value {
 fn stream_value_for(entry: &Entry, stream_value: &Value) -> Value {
     match (stream_value, entry.stream_descriptor) {
         (Value::Octets(bytes), Some((format, offset))) => {
-            unpack_stream(bytes, format, offset.max(0) as usize).unwrap_or_else(|| stream_value.clone())
+            unpack_stream(bytes, format, offset.max(0) as usize)
+                .unwrap_or_else(|| stream_value.clone())
         }
         _ => stream_value.clone(),
     }
@@ -642,15 +658,26 @@ fn unpack_stream(bytes: &[u8], format: i32, offset: usize) -> Option<Value> {
         14 => Value::Integer(i(false, 8, true)),
         15 => Value::Integer(i(true, 8, true)),
         20 => Value::Real(Real::from_f64(
-            f32::from_be_bytes(rd!(4).try_into().ok()?) as f64,
+            f32::from_be_bytes(rd!(4).try_into().ok()?) as f64
         )),
         21 => Value::Real(Real::from_f64(
-            f32::from_le_bytes(rd!(4).try_into().ok()?) as f64,
+            f32::from_le_bytes(rd!(4).try_into().ok()?) as f64
         )),
         22 => Value::Real(Real::from_f64(f64::from_be_bytes(rd!(8).try_into().ok()?))),
         23 => Value::Real(Real::from_f64(f64::from_le_bytes(rd!(8).try_into().ok()?))),
         _ => return None,
     })
+}
+
+/// One-line, human-readable rendering of a parameter value.
+pub fn format_value(v: &Value) -> String {
+    match v {
+        Value::Integer(i) => i.to_string(),
+        Value::Real(r) => format!("{}", r.to_f64()),
+        Value::String(s) => s.clone(),
+        Value::Boolean(b) => b.to_string(),
+        Value::Octets(o) => format!("<{} bytes>", o.len()),
+    }
 }
 
 #[cfg(test)]
@@ -768,16 +795,5 @@ mod tests {
         let e = tree.get(&[5]).unwrap();
         assert_eq!(e.value, Some(Value::Integer(2)));
         assert_eq!(e.identifier, "color"); // preserved
-    }
-}
-
-/// One-line, human-readable rendering of a parameter value.
-pub fn format_value(v: &Value) -> String {
-    match v {
-        Value::Integer(i) => i.to_string(),
-        Value::Real(r) => format!("{}", r.to_f64()),
-        Value::String(s) => s.clone(),
-        Value::Boolean(b) => b.to_string(),
-        Value::Octets(o) => format!("<{} bytes>", o.len()),
     }
 }
