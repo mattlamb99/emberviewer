@@ -77,6 +77,10 @@ pub struct Settings {
     /// Periodically send keep-alive requests to held connections.
     #[serde(default = "default_true")]
     pub send_keepalive: bool,
+    /// Matrix orientation: targets across the top (columns) when true; sources
+    /// across the top when false.
+    #[serde(default = "default_true")]
+    pub matrix_targets_on_top: bool,
     /// Optional path to append parameter-change logs to (empty = window only).
     #[serde(default)]
     pub log_file: String,
@@ -94,6 +98,7 @@ impl Default for Settings {
             show_descriptions: false,
             clear_tree_on_disconnect: false,
             send_keepalive: true,
+            matrix_targets_on_top: true,
             log_file: String::new(),
             last_connected: Vec::new(),
         }

@@ -73,6 +73,7 @@ struct RenderOpts {
     pulse_ms: u64,
     show_descriptions: bool,
     order_by: OrderBy,
+    matrix_targets_on_top: bool,
 }
 
 pub struct App {
@@ -600,6 +601,12 @@ impl App {
                 changed |= ui
                     .checkbox(&mut self.settings.send_keepalive, "Send keep-alive")
                     .changed();
+                changed |= ui
+                    .checkbox(
+                        &mut self.settings.matrix_targets_on_top,
+                        "Matrix: targets on top (else sources on top)",
+                    )
+                    .changed();
             });
         self.show_options = open;
         if changed {
@@ -686,6 +693,7 @@ impl App {
             pulse_ms: self.settings.boolean_pulse_ms,
             show_descriptions: self.settings.show_descriptions,
             order_by: self.settings.order_by,
+            matrix_targets_on_top: self.settings.matrix_targets_on_top,
         };
 
         // Collect commands to send, and the set of parameters currently on
@@ -764,7 +772,7 @@ fn render_entry(
             .body(|ui| {
                 // Matrix grid / function form, when this node is one.
                 if let Some(m) = &entry.matrix {
-                    render_matrix(ui, &entry, m, commands);
+                    render_matrix(ui, &entry, m, opts, commands);
                 } else if let Some(f) = &entry.function {
                     render_function(ui, session, &entry, f, commands);
                 }
@@ -803,7 +811,19 @@ fn render_parameter(
 ) {
     let label = param_label(entry, opts);
     ui.horizontal(|ui| {
-        ui.add_space(18.0);
+        ui.add_space(8.0);
+        // Read-only vs writable badge.
+        let (badge, color) = if entry.is_writable() {
+            ("rw", egui::Color32::from_rgb(70, 130, 200))
+        } else {
+            ("ro", egui::Color32::from_gray(140))
+        };
+        ui.label(egui::RichText::new(badge).monospace().small().color(color))
+            .on_hover_text(if entry.is_writable() {
+                "writable"
+            } else {
+                "read-only"
+            });
         // Attach the context menu to the (interactive) label, like node headers.
         ui.label(egui::RichText::new(label).strong())
             .on_hover_text(format!("path {}", path_string(&entry.path)))
@@ -1001,11 +1021,13 @@ fn render_filtered(
     }
 }
 
-/// Render a matrix as a target×source crosspoint grid.
+/// Render a matrix as a crosspoint grid. With `matrix_targets_on_top`, targets
+/// are columns and sources are rows; otherwise the axes are swapped.
 fn render_matrix(
     ui: &mut egui::Ui,
     entry: &crate::model::Entry,
     m: &crate::model::MatrixInfo,
+    opts: &RenderOpts,
     commands: &mut Vec<NetCommand>,
 ) {
     let path = entry.path.clone();
@@ -1015,10 +1037,47 @@ fn render_matrix(
         x if x == glow::matrix_type::N_TO_N => "N:N",
         _ => "?",
     };
-    ui.label(format!(
-        "Matrix {}×{} ({kind}) — rows = targets, cols = sources",
-        m.target_count, m.source_count
-    ));
+    ui.label(format!("Matrix {}×{} ({kind})", m.target_count, m.source_count));
+
+    // The connection state and the click action are axis-independent.
+    let mut cell = |ui: &mut egui::Ui, t: u32, s: u32| {
+        let on = m.connections.get(&t).is_some_and(|set| set.contains(&s));
+        if ui
+            .add(egui::SelectableLabel::new(on, "   "))
+            .on_hover_text(format!("target {t} ← source {s}"))
+            .clicked()
+        {
+            let operation = if on {
+                glow::connection_operation::DISCONNECT
+            } else if m.mtype == glow::matrix_type::N_TO_N {
+                glow::connection_operation::CONNECT // N:N adds a source
+            } else {
+                glow::connection_operation::ABSOLUTE // 1:N / 1:1 replace the source
+            };
+            commands.push(NetCommand::MatrixConnect {
+                path: path.clone(),
+                target: t,
+                sources: vec![s],
+                operation,
+            });
+        }
+    };
+
+    let (col_letter, row_letter) = if opts.matrix_targets_on_top {
+        ("T", "S")
+    } else {
+        ("S", "T")
+    };
+    ui.label(
+        egui::RichText::new(format!(
+            "columns (top) = {}, rows (left) = {}",
+            if opts.matrix_targets_on_top { "targets" } else { "sources" },
+            if opts.matrix_targets_on_top { "sources" } else { "targets" },
+        ))
+        .small()
+        .weak(),
+    );
+
     egui::ScrollArea::horizontal()
         .id_salt(("mscroll", &path))
         .show(ui, |ui| {
@@ -1026,33 +1085,27 @@ fn render_matrix(
                 .striped(true)
                 .spacing(egui::vec2(2.0, 2.0))
                 .show(ui, |ui| {
-                    ui.label("");
-                    for s in 0..m.source_count {
-                        ui.label(egui::RichText::new(s.to_string()).small());
+                    let (cols, rows) = if opts.matrix_targets_on_top {
+                        (m.target_count, m.source_count)
+                    } else {
+                        (m.source_count, m.target_count)
+                    };
+                    // Header row: corner + column indices.
+                    ui.label(egui::RichText::new(format!("{row_letter}\\{col_letter}")).small().weak());
+                    for c in 0..cols {
+                        ui.label(egui::RichText::new(format!("{col_letter}{c}")).small());
                     }
                     ui.end_row();
-                    for t in 0..m.target_count {
-                        ui.label(egui::RichText::new(t.to_string()).small());
-                        let connected = m.connections.get(&t);
-                        for s in 0..m.source_count {
-                            let on = connected.is_some_and(|set| set.contains(&s));
-                            if ui
-                                .add(egui::SelectableLabel::new(on, "   "))
-                                .on_hover_text(format!("target {t} ← source {s}"))
-                                .clicked()
-                            {
-                                let operation = if on {
-                                    glow::connection_operation::DISCONNECT
-                                } else {
-                                    glow::connection_operation::CONNECT
-                                };
-                                commands.push(NetCommand::MatrixConnect {
-                                    path: path.clone(),
-                                    target: t,
-                                    sources: vec![s],
-                                    operation,
-                                });
-                            }
+                    for r in 0..rows {
+                        ui.label(egui::RichText::new(format!("{row_letter}{r}")).small());
+                        for c in 0..cols {
+                            // Map (row, col) back to (target, source).
+                            let (t, s) = if opts.matrix_targets_on_top {
+                                (c, r)
+                            } else {
+                                (r, c)
+                            };
+                            cell(ui, t, s);
                         }
                         ui.end_row();
                     }
@@ -1115,7 +1168,7 @@ fn render_function(
             } else {
                 outcome.values.iter().map(format_value).collect()
             };
-            let status = if outcome.success { "✓" } else { "FAILED" };
+            let status = if outcome.success { "OK" } else { "FAILED" };
             ui.colored_label(
                 if outcome.success {
                     egui::Color32::from_rgb(40, 160, 80)
