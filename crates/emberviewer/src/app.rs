@@ -142,6 +142,9 @@ pub struct App {
     discovery: Option<crate::discovery::Discovery>,
     show_discovery: bool,
     show_about: bool,
+    /// Theme currently applied to the egui context (`None` until the first frame
+    /// applies it). Re-applied whenever it differs from `settings.dark_mode`.
+    applied_dark: Option<bool>,
 }
 
 /// The project's warm-orange brand accent.
@@ -189,8 +192,10 @@ impl App {
             discovery: None,
             show_discovery: false,
             show_about: false,
+            applied_dark: None,
         };
-        apply_theme(&cc.egui_ctx, app.settings.dark_mode);
+        // The theme is applied from within `ui()` (eframe overrides visuals set
+        // here during construction, which is why the startup theme didn't stick).
         app.apply_startup_mode(&cc.egui_ctx.clone());
         app
     }
@@ -397,6 +402,12 @@ fn timestamp() -> String {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        // Apply the persisted theme on the first frame (and whenever it changes);
+        // doing this in `ui()` rather than construction is what makes it stick.
+        if self.applied_dark != Some(self.settings.dark_mode) {
+            apply_theme(&ctx, self.settings.dark_mode);
+            self.applied_dark = Some(self.settings.dark_mode);
+        }
         self.pump_network();
         self.process_pulses(&ctx);
         self.poll_discovery(&ctx);
@@ -983,6 +994,7 @@ impl App {
                     .changed()
                 {
                     apply_theme(ctx, self.settings.dark_mode);
+                    self.applied_dark = Some(self.settings.dark_mode);
                     changed = true;
                 }
             });
@@ -1570,6 +1582,12 @@ fn render_parameter(
             }
             name.context_menu(|ui| {
                 context_copy(ui, &entry.path, &entry.identifier);
+                if let Some(v) = &entry.value {
+                    if ui.button("Copy value").clicked() {
+                        ui.ctx().copy_text(crate::model::format_value(v));
+                        ui.close();
+                    }
+                }
                 ui.separator();
                 let l = if logging {
                     "Stop logging"
@@ -2095,7 +2113,9 @@ fn render_matrix(
     } else {
         (egui::Color32::from_gray(238), egui::Color32::from_gray(212))
     };
-    let accent = ui.visuals().selection.bg_fill;
+    // Connected crosspoints get a darker, saturated burnt-orange so they stand
+    // out more strongly than the muted row-selection tint.
+    let crosspoint = egui::Color32::from_rgb(150, 74, 16);
 
     const CELL: f32 = 18.0;
     #[allow(unused)]
@@ -2261,7 +2281,7 @@ fn render_matrix(
                                     egui::Sense::click(),
                                 );
                                 let fill = if on {
-                                    accent
+                                    crosspoint
                                 } else if resp.hovered() {
                                     ui.visuals().widgets.hovered.bg_fill
                                 } else {
