@@ -285,7 +285,7 @@ impl TreeModel {
             if c.description.is_some() {
                 e.description = c.description;
             }
-            if let Some(online) = c.is_online {
+            if let Some(online) = c.is_online.as_ref().and_then(glow::any_as_bool) {
                 // Coming back online → refetch this subtree.
                 if online && !e.is_online {
                     e.requested = false;
@@ -337,7 +337,7 @@ impl TreeModel {
             if let Some(sd) = &c.stream_descriptor {
                 e.stream_descriptor = Some((sd.format, sd.offset));
             }
-            if let Some(online) = c.is_online {
+            if let Some(online) = c.is_online.as_ref().and_then(glow::any_as_bool) {
                 e.is_online = online;
             }
             // Enumeration: newline-separated, with `~`-hidden entries; or enumMap.

@@ -302,6 +302,16 @@ fn decode_real(content: &[u8]) -> f64 {
     f64::from_bits(bits)
 }
 
+/// Leniently interpret an `Any` field as a boolean (None if it isn't one).
+pub fn any_as_bool(a: &Any) -> Option<bool> {
+    rasn::ber::decode::<bool>(a.as_bytes()).ok()
+}
+
+/// Leniently interpret an `Any` field as a UTF-8 string.
+pub fn any_as_string(a: &Any) -> Option<EmberString> {
+    rasn::ber::decode::<EmberString>(a.as_bytes()).ok()
+}
+
 // ---------------------------------------------------------------------------
 // Value
 // ---------------------------------------------------------------------------
@@ -390,7 +400,7 @@ pub struct ParameterContents {
     #[rasn(tag(explicit(8)))]
     pub factor: Option<Integer32>,
     #[rasn(tag(explicit(9)))]
-    pub is_online: Option<bool>,
+    pub is_online: Option<Any>,
     #[rasn(tag(explicit(10)))]
     pub formula: Option<EmberString>,
     #[rasn(tag(explicit(11)))]
@@ -407,6 +417,11 @@ pub struct ParameterContents {
     pub stream_descriptor: Option<StreamDescription>,
     #[rasn(tag(explicit(17)))]
     pub schema_identifiers: Option<EmberString>,
+    // Tolerate vendor extension fields.
+    #[rasn(tag(explicit(18)))]
+    pub _ext18: Option<Any>,
+    #[rasn(tag(explicit(19)))]
+    pub _ext19: Option<Any>,
 }
 
 /// `Parameter ::= [APPLICATION 1] IMPLICIT SEQUENCE`.
@@ -445,12 +460,21 @@ pub struct NodeContents {
     pub identifier: Option<EmberString>,
     #[rasn(tag(explicit(1)))]
     pub description: Option<EmberString>,
+    // Decoded as Any for tolerance: some devices (Lawo Ruby) put non-bool /
+    // vendor values here, and rasn's strict SET decode aborts the whole frame on
+    // a type/tag mismatch. The model interprets these leniently.
     #[rasn(tag(explicit(2)))]
-    pub is_root: Option<bool>,
+    pub is_root: Option<Any>,
     #[rasn(tag(explicit(3)))]
-    pub is_online: Option<bool>,
+    pub is_online: Option<Any>,
     #[rasn(tag(explicit(4)))]
-    pub schema_identifiers: Option<EmberString>,
+    pub schema_identifiers: Option<Any>,
+    #[rasn(tag(explicit(5)))]
+    pub _ext5: Option<Any>,
+    #[rasn(tag(explicit(8)))]
+    pub _ext8: Option<Any>,
+    #[rasn(tag(explicit(10)))]
+    pub _ext10: Option<Any>,
 }
 
 /// `Node ::= [APPLICATION 3] IMPLICIT SEQUENCE`.
@@ -612,6 +636,11 @@ pub struct MatrixContents {
     pub labels: Option<LabelCollection>,
     #[rasn(tag(explicit(11)))]
     pub schema_identifiers: Option<EmberString>,
+    // Tolerate vendor extension fields (consume so SET parsing doesn't abort).
+    #[rasn(tag(explicit(12)))]
+    pub _ext12: Option<Any>,
+    #[rasn(tag(explicit(13)))]
+    pub _ext13: Option<Any>,
 }
 
 /// `Target ::= [APPLICATION 14] IMPLICIT Signal`, `Signal ::= SEQUENCE { number [0] }`.
