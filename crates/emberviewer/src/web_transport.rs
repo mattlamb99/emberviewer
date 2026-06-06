@@ -9,7 +9,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use ember_proto::glow::{self, Root};
-use ember_web_proto::{decode_doc_frame, ClientMsg, ServerMsg, WireProvider, WireStatus};
+use ember_web_proto::{decode_doc_frame, ClientMsg, ServerMsg, WireNode, WireProvider, WireStatus};
 use futures_util::{SinkExt, StreamExt};
 use gloo_net::websocket::{futures::WebSocket, Message};
 
@@ -23,6 +23,7 @@ pub enum WebEvent {
     },
     AuthRejected,
     Providers(Vec<WireProvider>),
+    AddressBook(Vec<WireNode>),
     Status {
         id: u64,
         status: WireStatus,
@@ -118,6 +119,7 @@ fn server_msg_to_event(sm: ServerMsg) -> WebEvent {
         ServerMsg::AuthOk { open_lan } => WebEvent::AuthOk { open_lan },
         ServerMsg::AuthRejected => WebEvent::AuthRejected,
         ServerMsg::Providers { providers } => WebEvent::Providers(providers),
+        ServerMsg::AddressBook { nodes } => WebEvent::AddressBook(nodes),
         ServerMsg::Status { id, status } => WebEvent::Status { id, status },
         ServerMsg::Denied { reason } => WebEvent::Denied { reason },
     }

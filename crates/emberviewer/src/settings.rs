@@ -63,6 +63,10 @@ fn default_server_port() -> u16 {
     8080
 }
 
+fn default_bind() -> String {
+    "0.0.0.0".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     #[serde(default)]
@@ -95,6 +99,9 @@ pub struct Settings {
     /// TCP port for the web server.
     #[serde(default = "default_server_port")]
     pub server_port: u16,
+    /// IP address to bind the web server to (`0.0.0.0` = all interfaces).
+    #[serde(default = "default_bind")]
+    pub server_bind: String,
     /// Shared access token required to load the page / open the WebSocket
     /// (ignored in open-LAN mode). Empty = generate one when first enabled.
     #[serde(default)]
@@ -126,6 +133,7 @@ impl Default for Settings {
             dark_mode: true,
             server_enabled: false,
             server_port: default_server_port(),
+            server_bind: default_bind(),
             server_token: String::new(),
             server_open_lan: false,
             server_read_only: false,

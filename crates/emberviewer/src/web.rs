@@ -7,7 +7,7 @@
 use std::collections::{HashMap, HashSet};
 
 use ember_proto::glow::{self, Value};
-use ember_web_proto::{ClientMsg, WireProvider, WireStatus};
+use ember_web_proto::{ClientMsg, WireNode, WireProvider, WireStatus};
 
 use crate::matrix_view;
 use crate::model::{format_value, Kind, MatrixInfo, TreeModel};
@@ -24,6 +24,8 @@ pub struct WebApp {
     auth_error: Option<String>,
     closed: bool,
     providers: Vec<WireProvider>,
+    /// The address book (folders + providers) for the left pane.
+    address_tree: Vec<WireNode>,
     current: Option<u64>,
     tree: TreeModel,
     status: Option<WireStatus>,
@@ -63,6 +65,7 @@ impl WebApp {
             auth_error: None,
             closed: false,
             providers: Vec::new(),
+            address_tree: Vec::new(),
             current: None,
             tree: TreeModel::new(),
             status: None,
@@ -108,6 +111,7 @@ impl WebApp {
                     self.auth_error = Some("Access denied — check the token in the URL.".into());
                 }
                 WebEvent::Providers(list) => self.providers = list,
+                WebEvent::AddressBook(nodes) => self.address_tree = nodes,
                 WebEvent::Status { id, status } => {
                     if self.current == Some(id) {
                         self.status = Some(status);
@@ -140,40 +144,18 @@ impl eframe::App for WebApp {
 
         self.apply_inbound();
 
+        let mut pending_open: Option<u64> = None;
+
         egui::TopBottomPanel::top("webbar").show_inside(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.heading(egui::RichText::new("emberviewer").color(ACCENT));
                 ui.separator();
-                if self.authed {
-                    let mut pending: Option<u64> = None;
-                    let current_name = self
-                        .current
-                        .and_then(|id| self.providers.iter().find(|p| p.id == id))
-                        .map(|p| p.name.clone())
-                        .unwrap_or_else(|| "Pick a provider…".into());
-                    egui::ComboBox::from_id_salt("provider")
-                        .selected_text(current_name)
-                        .show_ui(ui, |ui| {
-                            for p in &self.providers {
-                                if ui
-                                    .selectable_label(self.current == Some(p.id), &p.name)
-                                    .clicked()
-                                {
-                                    pending = Some(p.id);
-                                }
-                            }
-                        });
-                    if let Some(id) = pending {
-                        self.open_provider(id);
-                    }
-                    if let Some(st) = &self.status {
-                        ui.separator();
-                        ui.label(status_text(st));
-                    }
+                if let Some(st) = &self.status {
+                    ui.label(status_text(st));
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
-                        .button(if self.dark { "☀" } else { "🌙" })
+                        .button(if self.dark { "Light" } else { "Dark" })
                         .on_hover_text("Toggle theme")
                         .clicked()
                     {
@@ -185,6 +167,30 @@ impl eframe::App for WebApp {
                 });
             });
         });
+
+        // Left pane: the address book (folders + providers).
+        if self.authed {
+            egui::SidePanel::left("providers")
+                .resizable(true)
+                .default_width(200.0)
+                .show_inside(ui, |ui| {
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new("Providers").strong());
+                    ui.separator();
+                    let nodes = self.address_tree.clone();
+                    let current = self.current;
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            if nodes.is_empty() {
+                                ui.weak("(no providers)");
+                            }
+                            for n in &nodes {
+                                render_book_node(ui, n, current, &mut pending_open);
+                            }
+                        });
+                });
+        }
 
         egui::CentralPanel::default().show_inside(ui, |ui| {
             if let Some(err) = &self.auth_error {
@@ -202,13 +208,14 @@ impl eframe::App for WebApp {
                 ui.colored_label(egui::Color32::YELLOW, format!("Denied: {d}"));
             }
             if self.current.is_none() {
-                ui.label("Choose a provider above to start browsing.");
+                ui.label("Choose a provider on the left to start browsing.");
                 return;
             }
 
             let mut commands: Vec<NetCommand> = Vec::new();
             let mut visible: Vec<Vec<u32>> = Vec::new();
             let mut signal_click: Option<(Vec<u32>, bool, u32)> = None;
+            let mut row = 0usize;
             let roots = self.tree.roots.clone();
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
@@ -228,6 +235,7 @@ impl eframe::App for WebApp {
                         signal_click: &mut signal_click,
                         commands: &mut commands,
                         visible: &mut visible,
+                        row: &mut row,
                     };
                     for root in &roots {
                         render_node(ui, &mut ctx, root);
@@ -266,7 +274,39 @@ impl eframe::App for WebApp {
             }
         });
 
+        if let Some(id) = pending_open {
+            self.open_provider(id);
+        }
         self.signal_params_window(ui);
+    }
+}
+
+/// Render an address-book node (folder or provider) in the left pane.
+fn render_book_node(
+    ui: &mut egui::Ui,
+    node: &WireNode,
+    current: Option<u64>,
+    pending: &mut Option<u64>,
+) {
+    match node {
+        WireNode::Folder { name, children } => {
+            egui::CollapsingHeader::new(format!("📁 {name}"))
+                .default_open(true)
+                .show(ui, |ui| {
+                    for c in children {
+                        render_book_node(ui, c, current, pending);
+                    }
+                });
+        }
+        WireNode::Provider(p) => {
+            if ui
+                .selectable_label(current == Some(p.id), &p.name)
+                .on_hover_text(format!("{}:{}", p.host, p.port))
+                .clicked()
+            {
+                *pending = Some(p.id);
+            }
+        }
     }
 }
 
@@ -284,6 +324,8 @@ struct RenderCtx<'a> {
     signal_click: &'a mut Option<(Vec<u32>, bool, u32)>,
     commands: &'a mut Vec<NetCommand>,
     visible: &'a mut Vec<Vec<u32>>,
+    /// Running parameter-row index, for alternating row striping.
+    row: &'a mut usize,
 }
 
 impl WebApp {
@@ -427,25 +469,45 @@ fn render_node(ui: &mut egui::Ui, ctx: &mut RenderCtx, path: &[u32]) {
 
     // A leaf parameter.
     ctx.visible.push(path.to_vec());
-    ui.horizontal(|ui| {
-        let (badge, color) = if entry.is_writable() {
-            ("rw", egui::Color32::from_rgb(70, 130, 200))
+    let row = *ctx.row;
+    *ctx.row += 1;
+    // Reserve a background shape so the stripe paints behind the whole row.
+    let bg = ui.painter().add(egui::Shape::Noop);
+    let resp = ui
+        .horizontal(|ui| {
+            let (badge, color) = if entry.is_writable() {
+                ("rw", egui::Color32::from_rgb(70, 130, 200))
+            } else {
+                ("ro", egui::Color32::from_gray(140))
+            };
+            ui.label(egui::RichText::new(badge).monospace().small().color(color));
+            ui.label(egui::RichText::new(entry.label()).strong());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_space(6.0);
+                // Inline live meter for numeric parameters (fixed width so the
+                // row doesn't jiggle as the value's digit count changes).
+                if widgets::is_meterable(entry) {
+                    let range = widgets::meter_range(entry, ctx.meter_range);
+                    let value = entry.value.as_ref().and_then(widgets::value_f64);
+                    let h = ui.spacing().interact_size.y;
+                    widgets::draw_vmeter(ui, value, range, 10.0, h);
+                }
+                param_editor(ui, tree, path, ctx.edits, ctx.commands);
+            });
+        })
+        .response;
+
+    // Faint alternating stripe behind odd rows.
+    if row % 2 == 1 {
+        let stripe = if ui.visuals().dark_mode {
+            egui::Color32::from_white_alpha(8)
         } else {
-            ("ro", egui::Color32::from_gray(140))
+            egui::Color32::from_black_alpha(8)
         };
-        ui.label(egui::RichText::new(badge).monospace().small().color(color));
-        ui.label(egui::RichText::new(entry.label()).strong());
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            param_editor(ui, tree, path, ctx.edits, ctx.commands);
-            // Inline live meter for numeric parameters.
-            if widgets::is_meterable(entry) {
-                let range = widgets::meter_range(entry, ctx.meter_range);
-                let value = entry.value.as_ref().and_then(widgets::value_f64);
-                let h = ui.spacing().interact_size.y;
-                widgets::draw_vmeter(ui, value, range, 10.0, h);
-            }
-        });
-    });
+        let rect = egui::Rect::from_x_y_ranges(ui.max_rect().x_range(), resp.rect.y_range());
+        ui.painter()
+            .set(bg, egui::Shape::rect_filled(rect, 0.0, stripe));
+    }
 }
 
 /// A compact value editor / display for the parameter at `path`.
@@ -462,6 +524,14 @@ fn param_editor(
     let writable = entry.is_writable();
     let set = |commands: &mut Vec<NetCommand>, v: Value| {
         commands.push(NetCommand::SetValue(path.to_vec(), v));
+    };
+    // Fixed-width read-only numeric display (so the row doesn't jiggle as the
+    // value's digit count changes), showing the scaled/formatted value.
+    let ro_num = |ui: &mut egui::Ui, text: String| {
+        ui.add_sized(
+            egui::vec2(64.0, ui.spacing().interact_size.y),
+            egui::Label::new(text),
+        );
     };
 
     // Trigger.
@@ -510,7 +580,7 @@ fn param_editor(
                     set(commands, Value::Integer(v));
                 }
             } else {
-                ui.label(i.to_string());
+                ro_num(ui, widgets::display_value(entry, &Value::Integer(*i)));
             }
         }
         Some(Value::Real(r)) => {
@@ -520,7 +590,7 @@ fn param_editor(
                     set(commands, Value::Real(v.into()));
                 }
             } else {
-                ui.label(format!("{}", r.to_f64()));
+                ro_num(ui, widgets::display_value(entry, &Value::Real(r.clone())));
             }
         }
         Some(Value::String(s)) => {

@@ -32,6 +32,8 @@ mdns-sd = "0.20.0"
 axum = { version = "0.8", features = ["ws"] }
 rand = "0.8"
 rust-embed = "8"
+if-addrs = "0.13"
+qrcode = { version = "0.14", default-features = false }
 
 # Wasm browser client only.
 [target.'cfg(target_arch = "wasm32")'.dependencies]

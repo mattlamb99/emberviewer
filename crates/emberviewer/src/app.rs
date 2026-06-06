@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use ember_proto::glow::{self, Value};
-use ember_web_proto::WireProvider;
+use ember_web_proto::{WireNode, WireProvider};
 
 use crate::address_book::{AddressBook, Id, Node, DEFAULT_PORT};
 use crate::hub::HubRegistry;
@@ -17,7 +17,10 @@ use crate::model::{format_value, TreeModel};
 use crate::net::{ConnectionHandle, NetCommand, NetEvent};
 use crate::server::{self, ServerHandle};
 use crate::settings::{OrderBy, Settings, StartupMode};
-use crate::widgets::{draw_vmeter, is_meterable, meter_range, render_function, value_f64};
+use crate::widgets::{
+    display_value, draw_vmeter, format_suffix, is_meterable, meter_range, meter_readout,
+    render_function, value_f64,
+};
 
 /// State for one open provider connection.
 struct Session {
@@ -184,6 +187,70 @@ fn generate_token() -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Non-loopback IPv4 interfaces as `(name, ip)`, for the bind dropdown.
+fn list_nics() -> Vec<(String, std::net::Ipv4Addr)> {
+    let mut out = Vec::new();
+    if let Ok(ifaces) = if_addrs::get_if_addrs() {
+        for i in ifaces {
+            if i.is_loopback() {
+                continue;
+            }
+            if let std::net::IpAddr::V4(v4) = i.ip() {
+                out.push((i.name.clone(), v4));
+            }
+        }
+    }
+    out
+}
+
+/// A concrete IP to advertise in the URL/QR: the bound IP if specific, else the
+/// first non-loopback interface.
+fn display_ip(bind: &str, nics: &[(String, std::net::Ipv4Addr)]) -> Option<std::net::Ipv4Addr> {
+    if let Ok(v4) = bind.parse::<std::net::Ipv4Addr>() {
+        if !v4.is_unspecified() {
+            return Some(v4);
+        }
+    }
+    nics.first().map(|(_, ip)| *ip)
+}
+
+/// The browser URL for the web UI (token included unless open-LAN).
+fn web_url(ip: std::net::Ipv4Addr, port: u16, token: &str, open_lan: bool) -> String {
+    if open_lan {
+        format!("http://{ip}:{port}/")
+    } else {
+        format!("http://{ip}:{port}/?token={token}")
+    }
+}
+
+/// Paint a QR code of `data` (4px modules, with a quiet zone).
+fn draw_qr(ui: &mut egui::Ui, data: &str) {
+    let Ok(code) = qrcode::QrCode::new(data.as_bytes()) else {
+        return;
+    };
+    let width = code.width();
+    let colors = code.to_colors();
+    let module = 4.0_f32;
+    let quiet = 4.0_f32;
+    let side = (width as f32 + 2.0 * quiet) * module;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::hover());
+    let painter = ui.painter();
+    painter.rect_filled(rect, 2.0, egui::Color32::WHITE);
+    for y in 0..width {
+        for x in 0..width {
+            if colors[y * width + x] == qrcode::Color::Dark {
+                let px = rect.min.x + (quiet + x as f32) * module;
+                let py = rect.min.y + (quiet + y as f32) * module;
+                painter.rect_filled(
+                    egui::Rect::from_min_size(egui::pos2(px, py), egui::vec2(module, module)),
+                    0.0,
+                    egui::Color32::BLACK,
+                );
+            }
+        }
+    }
+}
+
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let rt = tokio::runtime::Builder::new_multi_thread()
@@ -212,7 +279,7 @@ impl App {
             show_about: false,
             applied_dark: None,
             hubs,
-            catalog: Arc::new(Mutex::new(Vec::new())),
+            catalog: Arc::new(Mutex::new(server::CatalogData::default())),
             server: None,
         };
         // The theme is applied from within `ui()` (eframe overrides visuals set
@@ -308,9 +375,10 @@ impl App {
         self.remember_session();
     }
 
-    /// Rebuild the provider list the web server exposes from the address book.
+    /// Rebuild the catalog the web server exposes from the address book: the flat
+    /// provider list (for id→addr lookup) and the folder tree (for the left pane).
     fn refresh_catalog(&self) {
-        let list: Vec<WireProvider> = self
+        let providers: Vec<WireProvider> = self
             .book
             .iter()
             .filter_map(|(_, n)| match n {
@@ -323,7 +391,10 @@ impl App {
                 Node::Folder(_) => None,
             })
             .collect();
-        *self.catalog.lock().unwrap() = list;
+        let tree: Vec<WireNode> = self.book.root().children.iter().map(node_to_wire).collect();
+        let mut c = self.catalog.lock().unwrap();
+        c.providers = providers;
+        c.tree = tree;
     }
 
     /// Start or stop the web server to match `settings.server_enabled`.
@@ -337,6 +408,7 @@ impl App {
                 self.refresh_catalog();
                 let cfg = server::ServerConfig {
                     port: self.settings.server_port,
+                    bind: self.settings.server_bind.clone(),
                     token: self.settings.server_token.clone(),
                     open_lan: self.settings.server_open_lan,
                     read_only: self.settings.server_read_only,
@@ -1112,6 +1184,44 @@ impl App {
                     }
                 });
                 ui.horizontal(|ui| {
+                    ui.label("Bind to");
+                    let nics = list_nics();
+                    let current = if self.settings.server_bind == "0.0.0.0" {
+                        "All interfaces".to_string()
+                    } else {
+                        self.settings.server_bind.clone()
+                    };
+                    egui::ComboBox::from_id_salt("bind")
+                        .selected_text(current)
+                        .show_ui(ui, |ui| {
+                            if ui
+                                .selectable_label(
+                                    self.settings.server_bind == "0.0.0.0",
+                                    "All interfaces",
+                                )
+                                .clicked()
+                            {
+                                self.settings.server_bind = "0.0.0.0".into();
+                                changed = true;
+                                do_restart = true;
+                            }
+                            for (name, ip) in &nics {
+                                let s = ip.to_string();
+                                if ui
+                                    .selectable_label(
+                                        self.settings.server_bind == s,
+                                        format!("{name} ({ip})"),
+                                    )
+                                    .clicked()
+                                {
+                                    self.settings.server_bind = s;
+                                    changed = true;
+                                    do_restart = true;
+                                }
+                            }
+                        });
+                });
+                ui.horizontal(|ui| {
                     ui.label("Token");
                     if ui
                         .add(
@@ -1148,7 +1258,30 @@ impl App {
                 }
                 if let Some(srv) = &self.server {
                     ui.colored_label(ACCENT, format!("● listening on port {}", srv.bound.port()));
-                    if !self.settings.server_open_lan && ui.button("Copy access token").clicked() {
+                    let nics = list_nics();
+                    if let Some(ip) = display_ip(&self.settings.server_bind, &nics) {
+                        let url = web_url(
+                            ip,
+                            srv.bound.port(),
+                            &self.settings.server_token,
+                            self.settings.server_open_lan,
+                        );
+                        ui.horizontal(|ui| {
+                            ui.hyperlink_to("open web page", &url);
+                            if ui.button("Copy URL").clicked() {
+                                ui.ctx().copy_text(url.clone());
+                            }
+                        });
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new("Scan to open on a phone:")
+                                .small()
+                                .weak(),
+                        );
+                        draw_qr(ui, &url);
+                    } else if !self.settings.server_open_lan
+                        && ui.button("Copy access token").clicked()
+                    {
                         ui.ctx().copy_text(self.settings.server_token.clone());
                     }
                 }
@@ -1366,7 +1499,7 @@ impl App {
                     let h = (ui.available_height() - 22.0).max(40.0);
                     draw_vmeter(ui, value, range, 30.0, h);
                     if let Some(v) = value {
-                        ui.label(egui::RichText::new(format!("{v:.2}")).small());
+                        ui.label(egui::RichText::new(meter_readout(&entry, v)).small());
                     }
                 });
             });
@@ -1410,7 +1543,7 @@ impl App {
                         let h = (ui.available_height() - 46.0).max(50.0);
                         let resp = draw_vmeter(ui, value, range, 40.0, h);
                         if let Some(v) = value {
-                            ui.label(format!("{v:.3}"));
+                            ui.label(meter_readout(&entry, v));
                         }
                         resp.context_menu(|ui| {
                             let l = if aot {
@@ -1936,45 +2069,6 @@ fn editor(
     }
 }
 
-/// The literal text after a printf conversion specifier in a parameter's format
-/// (e.g. "%d dB" → " dB"), used as a slider/value unit suffix.
-fn format_suffix(entry: &crate::model::Entry) -> String {
-    let Some(fmt) = &entry.format else {
-        return String::new();
-    };
-    if let Some(pct) = fmt.find('%') {
-        let rest = &fmt[pct + 1..];
-        if let Some(conv) = rest.find(|c: char| "diouxXeEfFgGsc".contains(c)) {
-            return rest[conv + 1..].to_string();
-        }
-    }
-    String::new()
-}
-
-/// Human-readable value: enum label, or factor/format-applied number, else raw.
-fn display_value(entry: &crate::model::Entry, v: &Value) -> String {
-    match v {
-        Value::Integer(i) => {
-            if let Some(lbl) = entry.enum_label(*i) {
-                lbl.to_string()
-            } else {
-                let factor = entry.factor.unwrap_or(1).max(1);
-                if factor != 1 {
-                    format!("{}{}", *i as f64 / factor as f64, format_suffix(entry))
-                } else if entry.format.is_some() {
-                    format!("{i}{}", format_suffix(entry))
-                } else {
-                    i.to_string()
-                }
-            }
-        }
-        Value::Real(r) if entry.format.is_some() => {
-            format!("{}{}", r.to_f64(), format_suffix(entry))
-        }
-        _ => format_value(v),
-    }
-}
-
 /// Eagerly fetch a matrix label sub-tree so source/target names resolve:
 /// request the base node, then its `targets`/`sources` children (whose
 /// getDirectory returns the label string params). Deduped via `label_fetch`.
@@ -2007,6 +2101,23 @@ fn paint_dot(ui: &mut egui::Ui, color: egui::Color32) {
         egui::Sense::hover(),
     );
     ui.painter().circle_filled(rect.center(), 4.5, color);
+}
+
+/// Convert an address-book node into its wire form (folders + providers) for the
+/// browser's left pane.
+fn node_to_wire(node: &Node) -> WireNode {
+    match node {
+        Node::Provider(p) => WireNode::Provider(WireProvider {
+            id: p.id,
+            name: p.name.clone(),
+            host: p.host.clone(),
+            port: p.port,
+        }),
+        Node::Folder(f) => WireNode::Folder {
+            name: f.name.clone(),
+            children: f.children.iter().map(node_to_wire).collect(),
+        },
+    }
 }
 
 /// Collect every provider id within a node subtree.

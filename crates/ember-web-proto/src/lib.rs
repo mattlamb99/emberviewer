@@ -72,6 +72,18 @@ pub struct WireProvider {
     pub port: u16,
 }
 
+/// The address book as a tree of folders and providers, for the browser's
+/// left-hand pane.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum WireNode {
+    Folder {
+        name: String,
+        children: Vec<WireNode>,
+    },
+    Provider(WireProvider),
+}
+
 /// Connection status of a provider, mirrored to clients.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "state")]
@@ -105,9 +117,13 @@ pub enum ServerMsg {
         open_lan: bool,
     },
     AuthRejected,
-    /// The provider list the client may open.
+    /// The provider list the client may open (flat).
     Providers {
         providers: Vec<WireProvider>,
+    },
+    /// The address book as folders + providers, for the left pane.
+    AddressBook {
+        nodes: Vec<WireNode>,
     },
     /// A provider's connection status changed.
     Status {

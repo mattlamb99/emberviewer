@@ -15,7 +15,7 @@ use axum::response::{IntoResponse, Json, Response};
 use axum::routing::get;
 use axum::Router;
 use ember_proto::glow;
-use ember_web_proto::{encode_doc_frame, ClientMsg, ServerMsg, WireProvider};
+use ember_web_proto::{encode_doc_frame, ClientMsg, ServerMsg, WireNode, WireProvider};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::oneshot;
 
@@ -23,8 +23,16 @@ use crate::hub::{HubLease, HubRegistry};
 use crate::net::NetCommand;
 use crate::wire::{command_from_wire, event_status};
 
-/// The set of providers a browser may open (kept in sync with the address book).
-pub type Catalog = Arc<Mutex<Vec<WireProvider>>>;
+/// What a browser may open: the flat provider list (for id→addr lookup) and the
+/// folder tree (for the left pane). Kept in sync with the address book.
+#[derive(Default)]
+pub struct CatalogData {
+    pub providers: Vec<WireProvider>,
+    pub tree: Vec<WireNode>,
+}
+
+/// Shared, mutable catalog handed to the server.
+pub type Catalog = Arc<Mutex<CatalogData>>;
 
 /// Shared state handed to every request handler.
 #[derive(Clone)]
@@ -47,6 +55,8 @@ pub struct ServerHandle {
 /// Configuration for [`start`].
 pub struct ServerConfig {
     pub port: u16,
+    /// IP to bind to (`0.0.0.0` = all interfaces).
+    pub bind: String,
     pub token: String,
     pub open_lan: bool,
     pub read_only: bool,
@@ -61,7 +71,11 @@ pub fn start(
     catalog: Catalog,
     cfg: ServerConfig,
 ) -> std::io::Result<ServerHandle> {
-    let std_listener = std::net::TcpListener::bind((Ipv4Addr::UNSPECIFIED, cfg.port))?;
+    let ip: std::net::IpAddr = cfg
+        .bind
+        .parse()
+        .unwrap_or(std::net::IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+    let std_listener = std::net::TcpListener::bind((ip, cfg.port))?;
     std_listener.set_nonblocking(true)?;
     let bound = std_listener.local_addr()?;
 
@@ -167,7 +181,7 @@ async fn providers(State(s): State<ServerState>, Query(q): Query<AuthQuery>) -> 
     if !authorized(&s, q.token.as_deref()) {
         return unauthorized();
     }
-    let list = s.catalog.lock().unwrap().clone();
+    let list = s.catalog.lock().unwrap().providers.clone();
     Json(list).into_response()
 }
 
@@ -209,10 +223,18 @@ async fn handle_ws(socket: WebSocket, s: ServerState) {
             .into(),
         ))
         .await;
-    let providers = s.catalog.lock().unwrap().clone();
+    let (providers, nodes) = {
+        let c = s.catalog.lock().unwrap();
+        (c.providers.clone(), c.tree.clone())
+    };
     let _ = sender
         .send(Message::Text(
             ServerMsg::Providers { providers }.to_json().into(),
+        ))
+        .await;
+    let _ = sender
+        .send(Message::Text(
+            ServerMsg::AddressBook { nodes }.to_json().into(),
         ))
         .await;
 
@@ -267,6 +289,7 @@ async fn handle_client_msg(
                 .catalog
                 .lock()
                 .unwrap()
+                .providers
                 .iter()
                 .find(|p| p.id == id)
                 .map(|p| format!("{}:{}", p.host, p.port));
@@ -371,9 +394,10 @@ mod tests {
     fn binds_and_reports_port_then_clashes() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let reg = HubRegistry::new(rt.handle().clone(), egui::Context::default());
-        let cat: Catalog = Arc::new(Mutex::new(Vec::new()));
+        let cat: Catalog = Arc::new(Mutex::new(CatalogData::default()));
         let cfg = ServerConfig {
             port: 0,
+            bind: "127.0.0.1".into(),
             token: "t".into(),
             open_lan: false,
             read_only: false,
@@ -389,6 +413,7 @@ mod tests {
             cat,
             ServerConfig {
                 port,
+                bind: "127.0.0.1".into(),
                 token: "t".into(),
                 open_lan: false,
                 read_only: false,
@@ -414,18 +439,22 @@ mod tests {
     fn http_provider_list_is_token_gated() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let reg = HubRegistry::new(rt.handle().clone(), egui::Context::default());
-        let cat: Catalog = Arc::new(Mutex::new(vec![WireProvider {
-            id: 5,
-            name: "Ruby".into(),
-            host: "10.0.0.2".into(),
-            port: 9000,
-        }]));
+        let cat: Catalog = Arc::new(Mutex::new(CatalogData {
+            providers: vec![WireProvider {
+                id: 5,
+                name: "Ruby".into(),
+                host: "10.0.0.2".into(),
+                port: 9000,
+            }],
+            tree: Vec::new(),
+        }));
         let h = start(
             rt.handle(),
             reg,
             cat,
             ServerConfig {
                 port: 0,
+                bind: "127.0.0.1".into(),
                 token: "secret".into(),
                 open_lan: false,
                 read_only: false,
@@ -451,13 +480,14 @@ mod tests {
     fn serves_the_web_shell_without_a_token() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let reg = HubRegistry::new(rt.handle().clone(), egui::Context::default());
-        let cat: Catalog = Arc::new(Mutex::new(Vec::new()));
+        let cat: Catalog = Arc::new(Mutex::new(CatalogData::default()));
         let h = start(
             rt.handle(),
             reg,
             cat,
             ServerConfig {
                 port: 0,
+                bind: "127.0.0.1".into(),
                 token: "secret".into(),
                 open_lan: false,
                 read_only: false,

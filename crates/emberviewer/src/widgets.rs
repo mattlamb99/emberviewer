@@ -50,6 +50,14 @@ pub fn meter_range(entry: &Entry, tracked: &mut HashMap<Vec<u32>, (f64, f64)>) -
     *range
 }
 
+/// A meter's numeric readout: the value scaled by `factor` with the format unit,
+/// so it matches the displayed (not raw) value. (Desktop meter panel only.)
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub fn meter_readout(entry: &Entry, v: f64) -> String {
+    let factor = entry.factor.unwrap_or(1).max(1) as f64;
+    format!("{:.2}{}", v / factor, format_suffix(entry))
+}
+
 /// A green→amber→red colour for a 0..1 meter fraction.
 fn meter_color(frac: f32) -> egui::Color32 {
     if frac < 0.6 {
@@ -89,6 +97,49 @@ pub fn draw_vmeter(
         painter.rect_filled(fill, 2.0, meter_color(frac));
     }
     resp
+}
+
+// ---------------------------------------------------------------------------
+// Value display (factor / format applied)
+// ---------------------------------------------------------------------------
+
+/// The literal suffix after a printf conversion in a parameter's `format`
+/// (e.g. `"%d dB"` → `" dB"`), used as a unit on values/sliders.
+pub fn format_suffix(entry: &Entry) -> String {
+    let Some(fmt) = &entry.format else {
+        return String::new();
+    };
+    if let Some(pct) = fmt.find('%') {
+        let rest = &fmt[pct + 1..];
+        if let Some(conv) = rest.find(|c: char| "diouxXeEfFgGsc".contains(c)) {
+            return rest[conv + 1..].to_string();
+        }
+    }
+    String::new()
+}
+
+/// Human-readable value: enum label, or factor/format-applied number, else raw.
+pub fn display_value(entry: &Entry, v: &Value) -> String {
+    match v {
+        Value::Integer(i) => {
+            if let Some(lbl) = entry.enum_label(*i) {
+                lbl.to_string()
+            } else {
+                let factor = entry.factor.unwrap_or(1).max(1);
+                if factor != 1 {
+                    format!("{}{}", *i as f64 / factor as f64, format_suffix(entry))
+                } else if entry.format.is_some() {
+                    format!("{i}{}", format_suffix(entry))
+                } else {
+                    i.to_string()
+                }
+            }
+        }
+        Value::Real(r) if entry.format.is_some() => {
+            format!("{}{}", r.to_f64(), format_suffix(entry))
+        }
+        _ => format_value(v),
+    }
 }
 
 // ---------------------------------------------------------------------------
