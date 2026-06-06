@@ -1024,8 +1024,11 @@ impl App {
                 ui.add_space(6.0);
                 ui.separator();
                 ui.add_space(6.0);
-                ui.hyperlink_to("GitHub repository", "https://github.com/m-l2/emberviewer");
-                ui.hyperlink_to("Website / docs", "https://m-l2.github.io/emberviewer");
+                ui.hyperlink_to(
+                    "GitHub repository",
+                    "https://github.com/mattlamb99/emberviewer",
+                );
+                ui.hyperlink_to("Website / docs", "https://mattlamb99.github.io/emberviewer");
             });
         self.show_about = open;
     }
