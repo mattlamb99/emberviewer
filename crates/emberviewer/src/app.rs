@@ -38,7 +38,7 @@ enum Status {
     Disconnected(String),
 }
 
-/// Draft state for the "add provider" dialog.
+/// Draft state for the add/edit provider dialog.
 #[derive(Default)]
 struct AddDialog {
     open: bool,
@@ -46,6 +46,16 @@ struct AddDialog {
     host: String,
     port: String,
     parent: Id,
+    /// `Some(id)` when editing an existing provider; `None` when adding.
+    editing: Option<Id>,
+}
+
+/// An action requested from the sidebar (often via a right-click menu).
+enum SidebarAction {
+    Open(Id),
+    Disconnect(Id),
+    Edit(Id),
+    Remove(Id),
 }
 
 pub struct App {
@@ -213,21 +223,19 @@ impl App {
                 ui.separator();
 
                 let root = self.book.root().clone();
+                let mut action = None;
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                    let mut to_connect = None;
                     for child in &root.children {
-                        Self::sidebar_node(
-                            ui,
-                            child,
-                            &self.sessions,
-                            self.active,
-                            &mut to_connect,
-                        );
-                    }
-                    if let Some(id) = to_connect {
-                        self.open_provider(id, ctx);
+                        Self::sidebar_node(ui, child, &self.sessions, self.active, &mut action);
                     }
                 });
+                match action {
+                    Some(SidebarAction::Open(id)) => self.open_provider(id, ctx),
+                    Some(SidebarAction::Disconnect(id)) => self.disconnect(id),
+                    Some(SidebarAction::Edit(id)) => self.open_edit_dialog(id),
+                    Some(SidebarAction::Remove(id)) => self.remove_provider(id),
+                    None => {}
+                }
             });
     }
 
@@ -237,7 +245,7 @@ impl App {
         node: &Node,
         sessions: &HashMap<Id, Session>,
         active: Option<Id>,
-        to_connect: &mut Option<Id>,
+        action: &mut Option<SidebarAction>,
     ) {
         match node {
             Node::Folder(folder) => {
@@ -245,11 +253,12 @@ impl App {
                     .default_open(true)
                     .show(ui, |ui| {
                         for child in &folder.children {
-                            Self::sidebar_node(ui, child, sessions, active, to_connect);
+                            Self::sidebar_node(ui, child, sessions, active, action);
                         }
                     });
             }
             Node::Provider(p) => {
+                let connected = sessions.contains_key(&p.id);
                 let status = sessions.get(&p.id).map(|s| &s.status);
                 let selected = active == Some(p.id);
                 ui.horizontal(|ui| {
@@ -258,10 +267,53 @@ impl App {
                         .selectable_label(selected, &p.name)
                         .on_hover_text(format!("{}:{}", p.host, p.port));
                     if resp.clicked() {
-                        *to_connect = Some(p.id);
+                        *action = Some(SidebarAction::Open(p.id));
                     }
+                    resp.context_menu(|ui| {
+                        if connected {
+                            if ui.button("Disconnect").clicked() {
+                                *action = Some(SidebarAction::Disconnect(p.id));
+                                ui.close();
+                            }
+                        } else if ui.button("Connect").clicked() {
+                            *action = Some(SidebarAction::Open(p.id));
+                            ui.close();
+                        }
+                        if ui.button("Edit…").clicked() {
+                            *action = Some(SidebarAction::Edit(p.id));
+                            ui.close();
+                        }
+                        ui.separator();
+                        if ui.button("Remove").clicked() {
+                            *action = Some(SidebarAction::Remove(p.id));
+                            ui.close();
+                        }
+                    });
                 });
             }
+        }
+    }
+
+    /// Open the dialog pre-filled to edit an existing provider.
+    fn open_edit_dialog(&mut self, id: Id) {
+        if let Some(p) = self.book.find_provider(id) {
+            self.add = AddDialog {
+                open: true,
+                name: p.name.clone(),
+                host: p.host.clone(),
+                port: p.port.to_string(),
+                parent: AddressBook::ROOT_ID,
+                editing: Some(id),
+            };
+        }
+    }
+
+    /// Remove a provider from the address book (disconnecting first if open).
+    fn remove_provider(&mut self, id: Id) {
+        self.disconnect(id);
+        self.book.remove(id);
+        if let Err(e) = self.book.save() {
+            self.status_line = format!("could not save address book: {e}");
         }
     }
 
@@ -270,7 +322,13 @@ impl App {
             return;
         }
         let mut open = self.add.open;
-        egui::Window::new("Add provider")
+        let editing = self.add.editing;
+        let title = if editing.is_some() {
+            "Edit provider"
+        } else {
+            "Add provider"
+        };
+        egui::Window::new(title)
             .collapsible(false)
             .resizable(false)
             .open(&mut open)
@@ -289,23 +347,30 @@ impl App {
                 ui.separator();
                 ui.horizontal(|ui| {
                     let valid = !self.add.host.trim().is_empty();
+                    let save_label = if editing.is_some() { "Save" } else { "Add" };
                     if ui
-                        .add_enabled(valid, egui::Button::new("Add"))
+                        .add_enabled(valid, egui::Button::new(save_label))
                         .clicked()
                     {
                         let port = self.add.port.trim().parse().unwrap_or(DEFAULT_PORT);
+                        let host = self.add.host.trim().to_string();
                         let name = if self.add.name.trim().is_empty() {
-                            self.add.host.clone()
+                            host.clone()
                         } else {
                             self.add.name.clone()
                         };
-                        self.book.add_provider(
-                            self.add.parent,
-                            name,
-                            self.add.host.trim().to_string(),
-                            port,
-                            None,
-                        );
+                        match editing {
+                            Some(id) => {
+                                self.book.update_provider(id, name.clone(), host, port, None);
+                                // Reflect a new display name on an open tab.
+                                if let Some(s) = self.sessions.get_mut(&id) {
+                                    s.name = name;
+                                }
+                            }
+                            None => {
+                                self.book.add_provider(self.add.parent, name, host, port, None);
+                            }
+                        }
                         if let Err(e) = self.book.save() {
                             self.status_line = format!("could not save address book: {e}");
                         }
@@ -602,11 +667,11 @@ fn path_string(path: &[u32]) -> String {
 fn context_copy(ui: &mut egui::Ui, path: &[u32], identifier: &str) {
     if ui.button("Copy path").clicked() {
         ui.ctx().copy_text(path_string(path));
-        ui.close_menu();
+        ui.close();
     }
     if !identifier.is_empty() && ui.button("Copy identifier").clicked() {
         ui.ctx().copy_text(identifier.to_string());
-        ui.close_menu();
+        ui.close();
     }
 }
 

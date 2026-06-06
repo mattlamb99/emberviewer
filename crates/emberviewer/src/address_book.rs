@@ -202,6 +202,28 @@ impl AddressBook {
         }
     }
 
+    /// Updates a provider's editable fields. Returns `true` if `id` is a
+    /// provider, `false` otherwise (leaving the tree unchanged).
+    pub fn update_provider(
+        &mut self,
+        id: Id,
+        name: impl Into<String>,
+        host: impl Into<String>,
+        port: u16,
+        description: Option<String>,
+    ) -> bool {
+        match self.node_mut(id) {
+            Some(Node::Provider(p)) => {
+                p.name = name.into();
+                p.host = host.into();
+                p.port = port;
+                p.description = description;
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Removes the node with `id` from the tree and returns it. The root cannot
     /// be removed. Returns `None` if not found.
     pub fn remove(&mut self, id: Id) -> Option<Node> {
