@@ -260,6 +260,34 @@ pre code { background: none; color: inherit; padding: 0; }
 .step h3 { margin: 4px 0 6px; font-size: 18px; }
 .step p { margin: 0 0 8px; color: var(--text-muted); }
 
+/* ---------- New-feature highlight ---------- */
+.pill {
+  display: inline-block;
+  background: var(--ember);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 999px;
+  vertical-align: middle;
+  margin-left: 6px;
+}
+.flow {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--ember);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  margin: 4px 0 26px;
+  overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+
 /* ---------- Docs (protocol) callout ---------- */
 .callout {
   display: flex;

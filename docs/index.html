@@ -23,6 +23,7 @@
         <span>emberviewer</span>
       </a>
       <span class="spacer"></span>
+      <a class="navlink hide-sm" href="#server-mode">Server mode</a>
       <a class="navlink hide-sm" href="#features">Features</a>
       <a class="navlink hide-sm" href="#getting-started">Get started</a>
       <a class="navlink" href="protocol.html">Docs</a>
@@ -67,6 +68,43 @@
     </div>
   </div>
 
+  <!-- ===================== Server mode (new) ===================== -->
+  <section id="server-mode">
+    <div class="wrap">
+      <p class="eyebrow">New <span class="pill">Server mode</span></p>
+      <h2>Operate it from your phone, over the WiFi</h2>
+      <p class="lead">
+        Ember+ gear usually sits behind a firewall only the engineering PC can reach, and the
+        embedded devices themselves cap how many consumers may connect. Flip on
+        <strong>server mode</strong> and the desktop app becomes the gateway: it holds one
+        connection per device and fans the live tree out to every browser on your network — no
+        app to install on the phone, and the phone never touches the gear directly.
+      </p>
+
+      <pre class="flow">Ember+ devices ──TCP──►  emberviewer (engineering PC)  ──HTTP / WebSocket──►   📱 phone
+                         one connection per device          shared live tree        💻 laptop</pre>
+
+      <div class="why-grid">
+        <div class="why-card">
+          <h3>One consumer per device</h3>
+          <p>A fan-out hub shares a single TCP connection and subscription set across every viewer, so a device sees just one consumer. Closing a browser never drops another viewer's updates.</p>
+        </div>
+        <div class="why-card">
+          <h3>Thin browsers</h3>
+          <p>The very same egui UI, compiled to WebAssembly. Documents cross as the device's original Glow/BER bytes, so each browser rebuilds a byte-identical tree.</p>
+        </div>
+        <div class="why-card">
+          <h3>Access control</h3>
+          <p>Token-protected by default (the token rides in the page URL). Toggle <em>open on LAN</em> for no-auth on a trusted network, or <em>read-only</em> so browsers can watch but not change anything.</p>
+        </div>
+        <div class="why-card">
+          <h3>One-tap joining</h3>
+          <p>Bind the right network interface, then share the shown URL or scan the QR code. Browse the tree, set values, read meters, route matrices and invoke functions from anywhere on the WiFi.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- ===================== Why ===================== -->
   <section id="why" class="alt">
     <div class="wrap">
@@ -107,6 +145,7 @@
 
       <p class="subhead">Available now</p>
       <div class="feature-grid">
+        <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Server mode <span class="pill">New</span></h3><p>Serve the UI to phones and laptops on your LAN — token-protected, with read-only and open-LAN modes. <a href="#server-mode">Learn more</a>.</p></div></div>
         <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Address book</h3><p>Organise providers in folders with drag-and-drop, saved between sessions.</p></div></div>
         <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>TCP connect</h3><p>Connect to any Ember+ provider over TCP (default port 9000).</p></div></div>
         <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Lazy tree browsing</h3><p>Walk the provider tree on demand with <code>getDirectory</code>, expanding only what you open.</p></div></div>
