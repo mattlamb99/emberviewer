@@ -1,0 +1,15 @@
+/target
+**/*.rs.bk
+*.pdb
+
+# Node test provider deps (the scripts are kept, deps are not)
+/testprovider/node_modules
+/testprovider/server.log
+/testprovider/package-lock.json
+
+# OS / editor
+.DS_Store
+*.swp
+
+# Local Claude Code settings
+/.claude/settings.local.json

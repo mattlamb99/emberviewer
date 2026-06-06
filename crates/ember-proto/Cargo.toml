@@ -1,0 +1,11 @@
+[package]
+name = "ember-proto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Ember+ protocol: S101 framing, BER, and the Glow schema (pure, no I/O)"
+
+[dependencies]
+thiserror.workspace = true
+tracing.workspace = true
+rasn = "0.28"

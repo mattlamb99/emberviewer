@@ -1,0 +1,17 @@
+[package]
+name = "emberviewer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Cross-platform Ember+ viewer — browse providers, view and set values"
+
+[dependencies]
+ember-proto = { path = "../ember-proto" }
+ember-net = { path = "../ember-net" }
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+directories = "6"
