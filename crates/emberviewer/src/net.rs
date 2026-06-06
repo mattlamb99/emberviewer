@@ -8,6 +8,7 @@
 
 use ember_proto::glow::{Root, Value};
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::hub::{HubLease, HubRegistry};
 
 /// A command from a consumer to a connection.
@@ -42,6 +43,9 @@ pub enum NetCommand {
 }
 
 /// An event from a connection to its consumers.
+// Constructed only on native (hub/server); the wasm client uses its own event
+// type, so the variants look unused there.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 #[derive(Debug, Clone)]
 pub enum NetEvent {
     /// Freshly connected (initial or after a reconnect).
@@ -59,10 +63,12 @@ pub enum NetEvent {
 /// UI-side handle to a running connection: the desktop's [`HubLease`] on the
 /// shared per-provider Hub. Dropping it releases the desktop's view (and shuts
 /// the connection down if no other viewer — e.g. a browser — holds it).
+#[cfg(not(target_arch = "wasm32"))]
 pub struct ConnectionHandle {
     lease: HubLease,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl ConnectionHandle {
     /// Attach the desktop as a viewer of provider `id` (connecting to `addr` if
     /// it isn't already open).

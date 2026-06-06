@@ -5,22 +5,45 @@ edition.workspace = true
 license.workspace = true
 description = "Cross-platform Ember+ viewer — browse providers, view and set values"
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# Dependencies common to the native app and the wasm browser client.
 [dependencies]
 ember-proto = { path = "../ember-proto" }
-ember-net = { path = "../ember-net" }
 ember-web-proto = { path = "../ember-web-proto" }
 serde.workspace = true
 serde_json.workspace = true
 base64.workspace = true
 tracing.workspace = true
-tracing-subscriber = { workspace = true, features = ["env-filter"] }
 anyhow.workspace = true
 thiserror.workspace = true
+egui = "0.34.3"
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+
+# Native desktop app only.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ember-net = { path = "../ember-net" }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 directories = "6"
 eframe = "0.34.3"
-egui = "0.34.3"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
 mdns-sd = "0.20.0"
 axum = { version = "0.8", features = ["ws"] }
-futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 rand = "0.8"
+
+# Wasm browser client only.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+eframe = { version = "0.34.3", default-features = false, features = ["glow", "default_fonts", "persistence"] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+futures-channel = { version = "0.3", default-features = false, features = ["std"] }
+gloo-net = { version = "0.6", default-features = false, features = ["websocket"] }
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Document",
+    "Element",
+    "HtmlCanvasElement",
+    "Location",
+] }
+console_error_panic_hook = "0.1"
