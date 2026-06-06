@@ -53,10 +53,11 @@ impl ConnectionHandle {
         rt: &tokio::runtime::Handle,
         addr: String,
         ctx: egui::Context,
+        keepalive: bool,
     ) -> ConnectionHandle {
         let (cmd_tx, cmd_rx) = tokio_mpsc::unbounded_channel();
         let (evt_tx, evt_rx) = mpsc::channel();
-        rt.spawn(run_connection(addr, cmd_rx, evt_tx, ctx));
+        rt.spawn(run_connection(addr, cmd_rx, evt_tx, ctx, keepalive));
         ConnectionHandle { cmd_tx, evt_rx }
     }
 
@@ -78,6 +79,7 @@ async fn run_connection(
     mut cmd_rx: tokio_mpsc::UnboundedReceiver<NetCommand>,
     evt_tx: mpsc::Sender<NetEvent>,
     ctx: egui::Context,
+    keepalive: bool,
 ) {
     let emit = |e: NetEvent| -> bool {
         let ok = evt_tx.send(e).is_ok();
@@ -93,7 +95,7 @@ async fn run_connection(
                 if !emit(NetEvent::Connected) {
                     return;
                 }
-                match run_session(conn, &mut cmd_rx, &emit).await {
+                match run_session(conn, &mut cmd_rx, &emit, keepalive).await {
                     SessionEnd::UserDisconnect => {
                         emit(NetEvent::Disconnected(None));
                         return;
@@ -143,6 +145,7 @@ async fn run_session(
     conn: Connection,
     cmd_rx: &mut tokio_mpsc::UnboundedReceiver<NetCommand>,
     emit: &impl Fn(NetEvent) -> bool,
+    keepalive: bool,
 ) -> SessionEnd {
     let (mut reader, mut writer) = conn.into_split();
 
@@ -151,8 +154,17 @@ async fn run_session(
         emit(NetEvent::Error(e.to_string()));
     }
 
+    let mut keepalive_timer = tokio::time::interval(std::time::Duration::from_secs(2));
+    // Skip the immediate first tick.
+    keepalive_timer.tick().await;
+
     loop {
         tokio::select! {
+            _ = keepalive_timer.tick(), if keepalive => {
+                if let Err(e) = writer.keepalive_request().await {
+                    return SessionEnd::Dropped(e.to_string());
+                }
+            }
             cmd = cmd_rx.recv() => {
                 let result = match cmd {
                     Some(NetCommand::GetDirectory(path)) => writer.get_directory(&path).await,

@@ -5,7 +5,7 @@
 //
 // Usage: node server.js
 const { EmberServer, EmberServerEvent, EmberLib } = require('node-emberplus');
-const { ParameterType } = EmberLib;
+const { ParameterType, FunctionArgument } = EmberLib;
 
 const HOST = '0.0.0.0';
 //const HOST = '127.0.0.1';
@@ -74,6 +74,51 @@ const jsonTree = [
                         value: 1,
                         enumeration: 'Red\nGreen\nBlue',
                         access: 'readWrite',
+                    },
+                ],
+            },
+            {
+                // path "0.2"  -- a real one-to-N routing matrix (4 targets x 4 sources).
+                // Presence of `targetCount` triggers the matrix branch in the JSON parser.
+                identifier: 'matrix',
+                type: 'oneToN',
+                mode: 'linear',
+                targetCount: 4,
+                sourceCount: 4,
+                // Initial crosspoints: target 0 <- source 0, target 1 <- source 2.
+                connections: {
+                    0: { target: 0, sources: [0] },
+                    1: { target: 1, sources: [2] },
+                },
+                // NOTE: a `labels` descriptor (basePath -> child label node) is
+                // intentionally omitted: node-emberplus's server fails to encode a
+                // matrix getDirectory response when labels + matrix children are both
+                // present (the request times out). The matrix still exposes its
+                // targets, sources and connections, which are the important parts here.
+            },
+            {
+                // path "0.3"  -- a node containing a real, invocable Function
+                identifier: 'functions',
+                children: [
+                    {
+                        // path "0.3.0"  -- add(a, b) -> sum
+                        identifier: 'add',
+                        description: 'Add two integers and return their sum',
+                        // Deterministic implementation: returns a + b as an integer.
+                        func: (args) => {
+                            const a = Number(args[0].value);
+                            const b = Number(args[1].value);
+                            return [new FunctionArgument(ParameterType.integer, a + b)];
+                        },
+                        // Typed arguments (ParameterType.integer === 1)
+                        arguments: [
+                            { type: ParameterType.integer, name: 'a' },
+                            { type: ParameterType.integer, name: 'b' },
+                        ],
+                        // Typed result (one integer)
+                        result: [
+                            { type: ParameterType.integer, name: 'sum' },
+                        ],
                     },
                 ],
             },

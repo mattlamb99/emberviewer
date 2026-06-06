@@ -539,53 +539,237 @@ impl Command {
 }
 
 // ---------------------------------------------------------------------------
-// Matrix / Function — modelled enough to round-trip; refined in Phase 4.
+// Matrix
 // ---------------------------------------------------------------------------
 
-/// `Matrix ::= [APPLICATION 13] IMPLICIT SEQUENCE` (subset).
+/// `MatrixType` values.
+pub mod matrix_type {
+    pub const ONE_TO_N: i32 = 0;
+    pub const ONE_TO_ONE: i32 = 1;
+    pub const N_TO_N: i32 = 2;
+}
+
+/// `ConnectionOperation` values (used when setting a crosspoint).
+pub mod connection_operation {
+    pub const ABSOLUTE: i32 = 0;
+    pub const CONNECT: i32 = 1;
+    pub const DISCONNECT: i32 = 2;
+}
+
+/// `ParametersLocation ::= CHOICE { basePath RELATIVE-OID, inline Integer32 }`.
+#[derive(AsnType, Decode, Encode, Debug, Clone, PartialEq)]
+#[rasn(choice)]
+pub enum ParametersLocation {
+    BasePath(RelativeOid),
+    Inline(Integer32),
+}
+
+/// `Label ::= [APPLICATION 18] IMPLICIT SEQUENCE`.
+#[derive(AsnType, Decode, Encode, Debug, Clone, PartialEq)]
+#[rasn(tag(application, 18))]
+pub struct Label {
+    #[rasn(tag(explicit(0)))]
+    pub base_path: RelativeOid,
+    #[rasn(tag(explicit(1)))]
+    pub description: EmberString,
+}
+
+/// Explicit `[0]` wrapper for `LabelCollection` entries.
+#[derive(AsnType, Decode, Encode, Debug, Clone, PartialEq)]
+#[rasn(delegate, tag(explicit(0)))]
+pub struct LabelEntry(pub Label);
+
+/// `LabelCollection ::= SEQUENCE OF [0] Label`.
+#[derive(AsnType, Decode, Encode, Debug, Clone, PartialEq)]
+#[rasn(delegate)]
+pub struct LabelCollection(pub Vec<LabelEntry>);
+
+/// `MatrixContents ::= SET { ... }` (all fields optional for decode tolerance).
+#[derive(AsnType, Decode, Encode, Debug, Clone, PartialEq, Default)]
+#[rasn(set)]
+pub struct MatrixContents {
+    #[rasn(tag(explicit(0)))]
+    pub identifier: Option<EmberString>,
+    #[rasn(tag(explicit(1)))]
+    pub description: Option<EmberString>,
+    #[rasn(tag(explicit(2)))]
+    pub r#type: Option<Integer32>,
+    #[rasn(tag(explicit(3)))]
+    pub addressing_mode: Option<Integer32>,
+    #[rasn(tag(explicit(4)))]
+    pub target_count: Option<Integer32>,
+    #[rasn(tag(explicit(5)))]
+    pub source_count: Option<Integer32>,
+    #[rasn(tag(explicit(6)))]
+    pub maximum_total_connects: Option<Integer32>,
+    #[rasn(tag(explicit(7)))]
+    pub maximum_connects_per_target: Option<Integer32>,
+    #[rasn(tag(explicit(8)))]
+    pub parameters_location: Option<ParametersLocation>,
+    #[rasn(tag(explicit(9)))]
+    pub gain_parameter_number: Option<Integer32>,
+    #[rasn(tag(explicit(10)))]
+    pub labels: Option<LabelCollection>,
+    #[rasn(tag(explicit(11)))]
+    pub schema_identifiers: Option<EmberString>,
+}
+
+/// `Target ::= [APPLICATION 14] IMPLICIT Signal`, `Signal ::= SEQUENCE { number [0] }`.
+#[derive(AsnType, Decode, Encode, Debug, Clone, PartialEq)]
+#[rasn(tag(application, 14))]
+pub struct Target {
+    #[rasn(tag(explicit(0)))]
+    pub number: Integer32,
+}
+
+/// `Source ::= [APPLICATION 15] IMPLICIT Signal`.
+#[derive(AsnType, Decode, Encode, Debug, Clone, PartialEq)]
+#[rasn(tag(application, 15))]
+pub struct Source {
+    #[rasn(tag(explicit(0)))]
+    pub number: Integer32,
+}
+
+/// `Connection ::= [APPLICATION 16] IMPLICIT SEQUENCE`.
+///
+/// `sources` is `PackedNumbers` (a RELATIVE-OID of source numbers).
+#[derive(AsnType, Decode, Encode, Debug, Clone, PartialEq)]
+#[rasn(tag(application, 16))]
+pub struct Connection {
+    #[rasn(tag(explicit(0)))]
+    pub target: Integer32,
+    #[rasn(tag(explicit(1)))]
+    pub sources: Option<RelativeOid>,
+    #[rasn(tag(explicit(2)))]
+    pub operation: Option<Integer32>,
+    #[rasn(tag(explicit(3)))]
+    pub disposition: Option<Integer32>,
+}
+
+/// Explicit `[0]` wrapper for `TargetCollection` entries.
+#[derive(AsnType, Decode, Encode, Debug, Clone, PartialEq)]
+#[rasn(delegate, tag(explicit(0)))]
+pub struct TargetEntry(pub Target);
+
+/// `TargetCollection ::= SEQUENCE OF [0] Target`.
+#[derive(AsnType, Decode, Encode, Debug, Clone, PartialEq)]
+#[rasn(delegate)]
+pub struct TargetCollection(pub Vec<TargetEntry>);
+
+/// Explicit `[0]` wrapper for `SourceCollection` entries.
+#[derive(AsnType, Decode, Encode, Debug, Clone, PartialEq)]
+#[rasn(delegate, tag(explicit(0)))]
+pub struct SourceEntry(pub Source);
+
+/// `SourceCollection ::= SEQUENCE OF [0] Source`.
+#[derive(AsnType, Decode, Encode, Debug, Clone, PartialEq)]
+#[rasn(delegate)]
+pub struct SourceCollection(pub Vec<SourceEntry>);
+
+/// Explicit `[0]` wrapper for `ConnectionCollection` entries.
+#[derive(AsnType, Decode, Encode, Debug, Clone, PartialEq)]
+#[rasn(delegate, tag(explicit(0)))]
+pub struct ConnectionEntry(pub Connection);
+
+/// `ConnectionCollection ::= SEQUENCE OF [0] Connection`.
+#[derive(AsnType, Decode, Encode, Debug, Clone, PartialEq)]
+#[rasn(delegate)]
+pub struct ConnectionCollection(pub Vec<ConnectionEntry>);
+
+/// `Matrix ::= [APPLICATION 13] IMPLICIT SEQUENCE`.
 #[derive(AsnType, Decode, Encode, Debug, Clone, PartialEq)]
 #[rasn(tag(application, 13))]
 pub struct Matrix {
     #[rasn(tag(explicit(0)))]
     pub number: Integer32,
     #[rasn(tag(explicit(1)))]
-    pub contents: Option<Any>,
+    pub contents: Option<MatrixContents>,
     #[rasn(tag(explicit(2)))]
     pub children: Option<ElementCollection>,
+    #[rasn(tag(explicit(3)))]
+    pub targets: Option<TargetCollection>,
+    #[rasn(tag(explicit(4)))]
+    pub sources: Option<SourceCollection>,
+    #[rasn(tag(explicit(5)))]
+    pub connections: Option<ConnectionCollection>,
 }
 
-/// `QualifiedMatrix ::= [APPLICATION 17] IMPLICIT SEQUENCE` (subset).
+/// `QualifiedMatrix ::= [APPLICATION 17] IMPLICIT SEQUENCE`.
 #[derive(AsnType, Decode, Encode, Debug, Clone, PartialEq)]
 #[rasn(tag(application, 17))]
 pub struct QualifiedMatrix {
     #[rasn(tag(explicit(0)))]
     pub path: RelativeOid,
     #[rasn(tag(explicit(1)))]
-    pub contents: Option<Any>,
+    pub contents: Option<MatrixContents>,
     #[rasn(tag(explicit(2)))]
     pub children: Option<ElementCollection>,
+    #[rasn(tag(explicit(3)))]
+    pub targets: Option<TargetCollection>,
+    #[rasn(tag(explicit(4)))]
+    pub sources: Option<SourceCollection>,
+    #[rasn(tag(explicit(5)))]
+    pub connections: Option<ConnectionCollection>,
 }
 
-/// `Function ::= [APPLICATION 19] IMPLICIT SEQUENCE` (subset).
+// ---------------------------------------------------------------------------
+// Function
+// ---------------------------------------------------------------------------
+
+/// `TupleItemDescription ::= [APPLICATION 21] IMPLICIT SEQUENCE` — one arg/result slot.
+#[derive(AsnType, Decode, Encode, Debug, Clone, PartialEq)]
+#[rasn(tag(application, 21))]
+pub struct TupleItemDescription {
+    #[rasn(tag(explicit(0)))]
+    pub r#type: Integer32,
+    #[rasn(tag(explicit(1)))]
+    pub name: Option<EmberString>,
+}
+
+/// Explicit `[0]` wrapper for `TupleDescription` entries.
+#[derive(AsnType, Decode, Encode, Debug, Clone, PartialEq)]
+#[rasn(delegate, tag(explicit(0)))]
+pub struct TupleItemEntry(pub TupleItemDescription);
+
+/// `TupleDescription ::= SEQUENCE OF [0] TupleItemDescription`.
+#[derive(AsnType, Decode, Encode, Debug, Clone, PartialEq)]
+#[rasn(delegate)]
+pub struct TupleDescription(pub Vec<TupleItemEntry>);
+
+/// `FunctionContents ::= SET { ... }`.
+#[derive(AsnType, Decode, Encode, Debug, Clone, PartialEq, Default)]
+#[rasn(set)]
+pub struct FunctionContents {
+    #[rasn(tag(explicit(0)))]
+    pub identifier: Option<EmberString>,
+    #[rasn(tag(explicit(1)))]
+    pub description: Option<EmberString>,
+    #[rasn(tag(explicit(2)))]
+    pub arguments: Option<TupleDescription>,
+    #[rasn(tag(explicit(3)))]
+    pub result: Option<TupleDescription>,
+}
+
+/// `Function ::= [APPLICATION 19] IMPLICIT SEQUENCE`.
 #[derive(AsnType, Decode, Encode, Debug, Clone, PartialEq)]
 #[rasn(tag(application, 19))]
 pub struct Function {
     #[rasn(tag(explicit(0)))]
     pub number: Integer32,
     #[rasn(tag(explicit(1)))]
-    pub contents: Option<Any>,
+    pub contents: Option<FunctionContents>,
     #[rasn(tag(explicit(2)))]
     pub children: Option<ElementCollection>,
 }
 
-/// `QualifiedFunction ::= [APPLICATION 20] IMPLICIT SEQUENCE` (subset).
+/// `QualifiedFunction ::= [APPLICATION 20] IMPLICIT SEQUENCE`.
 #[derive(AsnType, Decode, Encode, Debug, Clone, PartialEq)]
 #[rasn(tag(application, 20))]
 pub struct QualifiedFunction {
     #[rasn(tag(explicit(0)))]
     pub path: RelativeOid,
     #[rasn(tag(explicit(1)))]
-    pub contents: Option<Any>,
+    pub contents: Option<FunctionContents>,
     #[rasn(tag(explicit(2)))]
     pub children: Option<ElementCollection>,
 }

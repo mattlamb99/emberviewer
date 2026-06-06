@@ -12,6 +12,7 @@ use ember_proto::glow::{self, Value};
 use crate::address_book::{AddressBook, Id, Node, DEFAULT_PORT};
 use crate::model::{format_value, TreeModel};
 use crate::net::{ConnectionHandle, NetCommand, NetEvent};
+use crate::settings::{OrderBy, Settings, StartupMode};
 
 /// State for one open provider connection.
 struct Session {
@@ -28,6 +29,8 @@ struct Session {
     subscribed: HashSet<Vec<u32>>,
     /// Tree filter text (matches identifiers; empty = show all).
     filter: String,
+    /// Pending boolean "pulse" resets: path -> when to send `false`.
+    pulses: HashMap<Vec<u32>, std::time::Instant>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -58,6 +61,14 @@ enum SidebarAction {
     Remove(Id),
 }
 
+/// Settings that affect how the provider tree is rendered, bundled so they can
+/// be threaded through the recursive render functions.
+struct RenderOpts {
+    pulse_ms: u64,
+    show_descriptions: bool,
+    order_by: OrderBy,
+}
+
 pub struct App {
     rt: tokio::runtime::Runtime,
     book: AddressBook,
@@ -69,17 +80,20 @@ pub struct App {
     status_line: String,
     /// Filter text for the providers sidebar.
     provider_filter: String,
+    settings: Settings,
+    show_options: bool,
 }
 
 impl App {
-    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
             .build()
             .expect("tokio runtime");
         let book = AddressBook::load().unwrap_or_default();
-        App {
+        let settings = Settings::load();
+        let mut app = App {
             rt,
             book,
             sessions: HashMap::new(),
@@ -87,6 +101,42 @@ impl App {
             add: AddDialog::default(),
             status_line: String::new(),
             provider_filter: String::new(),
+            settings,
+            show_options: false,
+        };
+        app.apply_startup_mode(&cc.egui_ctx.clone());
+        app
+    }
+
+    /// Auto-connect providers per the configured startup mode.
+    fn apply_startup_mode(&mut self, ctx: &egui::Context) {
+        let ids: Vec<Id> = match self.settings.startup_mode {
+            StartupMode::ConnectNone => Vec::new(),
+            StartupMode::ConnectAll => self
+                .book
+                .iter()
+                .filter_map(|(_, n)| match n {
+                    Node::Provider(p) => Some(p.id),
+                    _ => None,
+                })
+                .collect(),
+            StartupMode::ConnectLast => self.settings.last_connected.clone(),
+        };
+        for id in ids {
+            if self.book.find_provider(id).is_some() {
+                self.connect(id, ctx);
+            }
+        }
+        self.active = self.sessions.keys().copied().min();
+    }
+
+    /// Record currently-open providers as the "last session" and persist.
+    fn remember_session(&mut self) {
+        let mut ids: Vec<Id> = self.sessions.keys().copied().collect();
+        ids.sort_unstable();
+        if ids != self.settings.last_connected {
+            self.settings.last_connected = ids;
+            let _ = self.settings.save();
         }
     }
 
@@ -107,6 +157,7 @@ impl App {
         if self.active == Some(id) {
             self.active = self.sessions.keys().copied().next();
         }
+        self.remember_session();
     }
 
     fn connect(&mut self, id: Id, ctx: &egui::Context) {
@@ -114,7 +165,12 @@ impl App {
             return;
         };
         let addr = format!("{}:{}", provider.host, provider.port);
-        let handle = ConnectionHandle::spawn(self.rt.handle(), addr.clone(), ctx.clone());
+        let handle = ConnectionHandle::spawn(
+            self.rt.handle(),
+            addr.clone(),
+            ctx.clone(),
+            self.settings.send_keepalive,
+        );
         self.sessions.insert(
             id,
             Session {
@@ -127,13 +183,16 @@ impl App {
                 edits: HashMap::new(),
                 subscribed: HashSet::new(),
                 filter: String::new(),
+                pulses: HashMap::new(),
             },
         );
         self.active = Some(id);
+        self.remember_session();
     }
 
     /// Drain network events for every session and apply them to the model.
     fn pump_network(&mut self) {
+        let clear_on_disconnect = self.settings.clear_tree_on_disconnect;
         for session in self.sessions.values_mut() {
             for event in session.handle.drain() {
                 match event {
@@ -159,6 +218,10 @@ impl App {
                     NetEvent::Disconnected(reason) => {
                         session.status =
                             Status::Disconnected(reason.unwrap_or_else(|| "closed".into()));
+                        if clear_on_disconnect {
+                            session.tree = TreeModel::new();
+                            session.subscribed.clear();
+                        }
                     }
                     NetEvent::Error(e) => self.status_line = format!("error: {e}"),
                 }
@@ -171,9 +234,19 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.pump_network();
+        self.process_pulses(&ctx);
+
+        egui::TopBottomPanel::top("menubar").show_inside(ui, |ui| {
+            ui.horizontal(|ui| {
+                if ui.button("Options").clicked() {
+                    self.show_options = true;
+                }
+            });
+        });
 
         self.sidebar(ui, &ctx);
         self.add_dialog(&ctx);
+        self.options_window(&ctx);
         self.tabs(ui);
 
         egui::TopBottomPanel::bottom("status").show_inside(ui, |ui| {
@@ -420,6 +493,113 @@ impl App {
         }
     }
 
+    /// Send the deferred `false` of any boolean pulses whose hold time elapsed.
+    fn process_pulses(&mut self, ctx: &egui::Context) {
+        let now = std::time::Instant::now();
+        let mut soonest: Option<std::time::Duration> = None;
+        for session in self.sessions.values_mut() {
+            let due: Vec<Vec<u32>> = session
+                .pulses
+                .iter()
+                .filter(|(_, t)| now >= **t)
+                .map(|(p, _)| p.clone())
+                .collect();
+            for path in due {
+                session.pulses.remove(&path);
+                session
+                    .handle
+                    .send(NetCommand::SetValue(path, Value::Boolean(false)));
+            }
+            for t in session.pulses.values() {
+                let d = t.saturating_duration_since(now);
+                soonest = Some(soonest.map_or(d, |s| s.min(d)));
+            }
+        }
+        if let Some(d) = soonest {
+            ctx.request_repaint_after(d);
+        }
+    }
+
+    fn options_window(&mut self, ctx: &egui::Context) {
+        if !self.show_options {
+            return;
+        }
+        let mut open = self.show_options;
+        let mut changed = false;
+        egui::Window::new("Options")
+            .open(&mut open)
+            .resizable(false)
+            .collapsible(false)
+            .show(ctx, |ui| {
+                egui::Grid::new("optsgrid").num_columns(2).show(ui, |ui| {
+                    ui.label("On startup");
+                    egui::ComboBox::from_id_salt("startup")
+                        .selected_text(self.settings.startup_mode.label())
+                        .show_ui(ui, |ui| {
+                            for m in [
+                                StartupMode::ConnectNone,
+                                StartupMode::ConnectAll,
+                                StartupMode::ConnectLast,
+                            ] {
+                                changed |= ui
+                                    .selectable_value(&mut self.settings.startup_mode, m, m.label())
+                                    .clicked();
+                            }
+                        });
+                    ui.end_row();
+
+                    ui.label("Order by");
+                    egui::ComboBox::from_id_salt("orderby")
+                        .selected_text(self.settings.order_by.label())
+                        .show_ui(ui, |ui| {
+                            for o in [OrderBy::Number, OrderBy::Identifier, OrderBy::Description] {
+                                changed |= ui
+                                    .selectable_value(&mut self.settings.order_by, o, o.label())
+                                    .clicked();
+                            }
+                        });
+                    ui.end_row();
+
+                    ui.label("Boolean pulse (ms)");
+                    changed |= ui
+                        .add(
+                            egui::DragValue::new(&mut self.settings.boolean_pulse_ms)
+                                .range(10..=10_000),
+                        )
+                        .changed();
+                    ui.end_row();
+
+                    ui.label("Log file");
+                    changed |= ui
+                        .add(
+                            egui::TextEdit::singleline(&mut self.settings.log_file)
+                                .hint_text("optional path"),
+                        )
+                        .changed();
+                    ui.end_row();
+                });
+                ui.separator();
+                changed |= ui
+                    .checkbox(&mut self.settings.show_descriptions, "Show descriptions in tree")
+                    .changed();
+                changed |= ui
+                    .checkbox(
+                        &mut self.settings.clear_tree_on_disconnect,
+                        "Clear tree on disconnect",
+                    )
+                    .changed();
+                changed |= ui
+                    .checkbox(&mut self.settings.send_keepalive, "Send keep-alive")
+                    .changed();
+            });
+        self.show_options = open;
+        if changed {
+            if let Err(e) = self.settings.save() {
+                self.status_line = format!("could not save settings: {e}");
+            }
+        }
+    }
+
     /// One tab per open connection, with status dot and a close button.
     fn tabs(&mut self, ui: &mut egui::Ui) {
         if self.sessions.is_empty() {
@@ -493,11 +673,17 @@ impl App {
             Some(compute_filter_set(&session.tree, session.filter.trim()))
         };
 
+        let opts = RenderOpts {
+            pulse_ms: self.settings.boolean_pulse_ms,
+            show_descriptions: self.settings.show_descriptions,
+            order_by: self.settings.order_by,
+        };
+
         // Collect commands to send, and the set of parameters currently on
         // screen (so we can manage subscriptions), after the render borrow ends.
         let mut commands: Vec<NetCommand> = Vec::new();
         let mut visible: Vec<Vec<u32>> = Vec::new();
-        let roots = session.tree.roots.clone();
+        let roots = sorted_paths(&session.tree, &session.tree.roots, opts.order_by);
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -506,11 +692,13 @@ impl App {
                         ui.weak("no matches in loaded tree");
                     }
                     for root in &roots {
-                        render_filtered(ui, session, root, allowed, &mut commands, &mut visible);
+                        render_filtered(
+                            ui, session, root, allowed, &opts, &mut commands, &mut visible,
+                        );
                     }
                 } else {
                     for root in &roots {
-                        render_entry(ui, session, root, &mut commands, &mut visible);
+                        render_entry(ui, session, root, &opts, &mut commands, &mut visible);
                     }
                 }
             });
@@ -541,6 +729,7 @@ fn render_entry(
     ui: &mut egui::Ui,
     session: &mut Session,
     path: &[u32],
+    opts: &RenderOpts,
     commands: &mut Vec<NetCommand>,
     visible: &mut Vec<Vec<u32>>,
 ) {
@@ -557,15 +746,16 @@ fn render_entry(
             false,
         );
         let next_open = header.is_open();
+        let heading = node_label(&entry, opts);
         let resp = header
             .show_header(ui, |ui| {
-                ui.label(format!("📁 {}", entry.label()))
+                ui.label(heading)
                     .context_menu(|ui| context_copy(ui, &entry.path, &entry.identifier));
             })
             .body(|ui| {
-                let children = entry.children.clone();
+                let children = sorted_paths(&session.tree, &entry.children, opts.order_by);
                 for child in &children {
-                    render_entry(ui, session, child, commands, visible);
+                    render_entry(ui, session, child, opts, commands, visible);
                 }
                 if children.is_empty() {
                     ui.weak("…");
@@ -584,7 +774,7 @@ fn render_entry(
     } else {
         // A leaf parameter is on screen → eligible for a live subscription.
         visible.push(path.to_vec());
-        render_parameter(ui, session, &entry, commands);
+        render_parameter(ui, session, &entry, opts, commands);
     }
 }
 
@@ -593,12 +783,14 @@ fn render_parameter(
     ui: &mut egui::Ui,
     session: &mut Session,
     entry: &crate::model::Entry,
+    opts: &RenderOpts,
     commands: &mut Vec<NetCommand>,
 ) {
+    let label = param_label(entry, opts);
     ui.horizontal(|ui| {
         ui.add_space(18.0);
         // Attach the context menu to the (interactive) label, like node headers.
-        ui.label(egui::RichText::new(entry.label()).strong())
+        ui.label(egui::RichText::new(label).strong())
             .on_hover_text(format!("path {}", path_string(&entry.path)))
             .context_menu(|ui| context_copy(ui, &entry.path, &entry.identifier));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -607,7 +799,7 @@ fn render_parameter(
                     commands.push(NetCommand::SetValue(entry.path.clone(), Value::Integer(0)));
                 }
             } else if entry.is_writable() {
-                editor(ui, session, entry, commands);
+                editor(ui, session, entry, opts, commands);
             } else if let Some(v) = &entry.value {
                 ui.label(format_value(v));
             } else {
@@ -622,14 +814,27 @@ fn editor(
     ui: &mut egui::Ui,
     session: &mut Session,
     entry: &crate::model::Entry,
+    opts: &RenderOpts,
     commands: &mut Vec<NetCommand>,
 ) {
     let path = entry.path.clone();
     match &entry.value {
         Some(Value::Boolean(b)) => {
-            let mut v = *b;
-            if ui.checkbox(&mut v, "").changed() {
-                commands.push(NetCommand::SetValue(path, Value::Boolean(v)));
+            // Set true / Set false / Pulse (true now, false after the hold time).
+            let on = *b;
+            ui.label(if on { "true" } else { "false" });
+            if ui.button("Pulse").on_hover_text("Set true, then false").clicked() {
+                commands.push(NetCommand::SetValue(path.clone(), Value::Boolean(true)));
+                let deadline = std::time::Instant::now()
+                    + std::time::Duration::from_millis(opts.pulse_ms);
+                session.pulses.insert(path.clone(), deadline);
+            }
+            if ui.add_enabled(on, egui::Button::new("Set false")).clicked() {
+                session.pulses.remove(&path);
+                commands.push(NetCommand::SetValue(path.clone(), Value::Boolean(false)));
+            }
+            if ui.add_enabled(!on, egui::Button::new("Set true")).clicked() {
+                commands.push(NetCommand::SetValue(path, Value::Boolean(true)));
             }
         }
         Some(Value::Integer(i)) => {
@@ -756,6 +961,7 @@ fn render_filtered(
     session: &mut Session,
     path: &[u32],
     allowed: &HashSet<Vec<u32>>,
+    opts: &RenderOpts,
     commands: &mut Vec<NetCommand>,
     visible: &mut Vec<Vec<u32>>,
 ) {
@@ -766,17 +972,61 @@ fn render_filtered(
         return;
     };
     if entry.kind.is_expandable() {
-        ui.label(format!("📁 {}", entry.label()))
+        ui.label(node_label(&entry, opts))
             .context_menu(|ui| context_copy(ui, &entry.path, &entry.identifier));
         ui.indent(("filt", path), |ui| {
-            for child in &entry.children {
-                render_filtered(ui, session, child, allowed, commands, visible);
+            let children = sorted_paths(&session.tree, &entry.children, opts.order_by);
+            for child in &children {
+                render_filtered(ui, session, child, allowed, opts, commands, visible);
             }
         });
     } else {
         visible.push(path.to_vec());
-        render_parameter(ui, session, &entry, commands);
+        render_parameter(ui, session, &entry, opts, commands);
     }
+}
+
+/// Heading text for an expandable node (with optional description suffix).
+fn node_label(entry: &crate::model::Entry, opts: &RenderOpts) -> String {
+    let base = format!("📁 {}", entry.label());
+    append_description(base, entry, opts)
+}
+
+/// Label text for a parameter (with optional description suffix).
+fn param_label(entry: &crate::model::Entry, opts: &RenderOpts) -> String {
+    append_description(entry.label(), entry, opts)
+}
+
+fn append_description(base: String, entry: &crate::model::Entry, opts: &RenderOpts) -> String {
+    match (opts.show_descriptions, &entry.description) {
+        (true, Some(d)) if !d.is_empty() => format!("{base}  —  {d}"),
+        _ => base,
+    }
+}
+
+/// Order a set of sibling paths according to `order`. Unknown entries keep their
+/// given order at the end.
+fn sorted_paths(tree: &TreeModel, paths: &[Vec<u32>], order: OrderBy) -> Vec<Vec<u32>> {
+    let mut out = paths.to_vec();
+    out.sort_by(|a, b| {
+        let (ea, eb) = (tree.get(a), tree.get(b));
+        match order {
+            OrderBy::Number => a.last().cmp(&b.last()),
+            OrderBy::Identifier => key_of(ea, |e| e.identifier.to_lowercase())
+                .cmp(&key_of(eb, |e| e.identifier.to_lowercase())),
+            OrderBy::Description => key_of(ea, |e| {
+                e.description.clone().unwrap_or_default().to_lowercase()
+            })
+            .cmp(&key_of(eb, |e| {
+                e.description.clone().unwrap_or_default().to_lowercase()
+            })),
+        }
+    });
+    out
+}
+
+fn key_of(entry: Option<&crate::model::Entry>, f: impl Fn(&crate::model::Entry) -> String) -> String {
+    entry.map(f).unwrap_or_default()
 }
 
 /// A text field that commits its parsed value on Enter / focus-loss.

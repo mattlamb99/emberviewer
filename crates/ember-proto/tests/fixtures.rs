@@ -141,6 +141,83 @@ fn decode_child_response_all_parameter_types() {
     assert_eq!(c.r#type, Some(parameter_type::ENUM));
 }
 
+// Phase 4 fixtures — matrix, function, and an invocation result.
+const MATRIX_RESPONSE: &str = "fe000e0001c001021f02604e6b4ca04a7148a0040d020002a120311ea0080c066d61\
+74726978a203020100a303020100a403020104a503020104a51e301ca00c700aa003020100a1030d0100a00c700aa00302\
+0101a1030d0102572fff";
+const FUNCTION_RESPONSE: &str = "fe000e0001c001021f0260756b73a071746fa0050d03000300a1663164a0050c03\
+616464a1270c254164642074776f20696e74656765727320616e642072657475726e2074686569722073756da21e301ca0\
+0c750aa003020101a1030c0161a00c750aa003020101a1030c0162a3123010a00e750ca003020101a1050c0373756db778ff";
+const INVOCATION_RESULT: &str =
+    "fe000e0001c001021f0260157713a003020101a1030101fddfa2073005a0030201073045ff";
+
+#[test]
+fn decode_matrix() {
+    let payload = payload_of(MATRIX_RESPONSE);
+    let root = decode_root(&payload).expect("decode matrix");
+    let Root::Elements(coll) = root else {
+        panic!("expected elements");
+    };
+    let RootElementEntry(RootElement::QualifiedMatrix(m)) = &coll.0[0] else {
+        panic!("expected QualifiedMatrix, got {:?}", coll.0[0]);
+    };
+    assert_eq!(m.path.arcs(), vec![0, 2]);
+    let c = m.contents.as_ref().expect("matrix contents");
+    assert_eq!(c.identifier.as_deref(), Some("matrix"));
+    assert_eq!(c.r#type, Some(matrix_type::ONE_TO_N));
+    assert_eq!(c.target_count, Some(4));
+    assert_eq!(c.source_count, Some(4));
+
+    let conns = &m.connections.as_ref().expect("connections").0;
+    assert_eq!(conns.len(), 2);
+    // target 0 <- source 0
+    assert_eq!(conns[0].0.target, 0);
+    assert_eq!(conns[0].0.sources.as_ref().unwrap().arcs(), vec![0]);
+    // target 1 <- source 2
+    assert_eq!(conns[1].0.target, 1);
+    assert_eq!(conns[1].0.sources.as_ref().unwrap().arcs(), vec![2]);
+}
+
+#[test]
+fn decode_function() {
+    let payload = payload_of(FUNCTION_RESPONSE);
+    let root = decode_root(&payload).expect("decode function");
+    let Root::Elements(coll) = root else {
+        panic!("expected elements");
+    };
+    let RootElementEntry(RootElement::QualifiedFunction(f)) = &coll.0[0] else {
+        panic!("expected QualifiedFunction, got {:?}", coll.0[0]);
+    };
+    assert_eq!(f.path.arcs(), vec![0, 3, 0]);
+    let c = f.contents.as_ref().expect("function contents");
+    assert_eq!(c.identifier.as_deref(), Some("add"));
+
+    let args = &c.arguments.as_ref().expect("arguments").0;
+    assert_eq!(args.len(), 2);
+    assert_eq!(args[0].0.r#type, parameter_type::INTEGER);
+    assert_eq!(args[0].0.name.as_deref(), Some("a"));
+    assert_eq!(args[1].0.name.as_deref(), Some("b"));
+
+    let result = &c.result.as_ref().expect("result").0;
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].0.name.as_deref(), Some("sum"));
+    assert_eq!(result[0].0.r#type, parameter_type::INTEGER);
+}
+
+#[test]
+fn decode_invocation_result() {
+    let payload = payload_of(INVOCATION_RESULT);
+    let root = decode_root(&payload).expect("decode invocation result");
+    let Root::InvocationResult(ir) = root else {
+        panic!("expected InvocationResult, got {root:?}");
+    };
+    assert_eq!(ir.invocation_id, Some(1));
+    assert_eq!(ir.success, Some(true));
+    let result = &ir.result.as_ref().expect("result").0;
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].0, Value::Integer(7));
+}
+
 #[test]
 fn root_getdirectory_roundtrips() {
     // Our own request must encode and decode back to an equal value.

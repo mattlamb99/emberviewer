@@ -6,6 +6,7 @@ mod address_book;
 mod app;
 mod model;
 mod net;
+mod settings;
 
 fn main() -> eframe::Result {
     tracing_subscriber::fmt()
