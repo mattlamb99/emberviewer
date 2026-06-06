@@ -22,9 +22,13 @@ pub fn value_f64(v: &Value) -> Option<f64> {
     }
 }
 
-/// Whether a parameter can be shown as a meter (numeric value).
+/// Whether a parameter can be shown as a meter: a numeric value that is not an
+/// enumeration (enum values are integers with labels, not levels) or a trigger.
+/// Booleans/strings/octets are already non-numeric.
 pub fn is_meterable(entry: &Entry) -> bool {
-    entry.value.as_ref().and_then(value_f64).is_some()
+    entry.enum_entries.is_empty()
+        && entry.param_type != Some(glow::parameter_type::TRIGGER)
+        && entry.value.as_ref().and_then(value_f64).is_some()
 }
 
 /// The meter range for an entry: explicit min/max if present, else an
