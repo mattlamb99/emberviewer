@@ -175,7 +175,7 @@ impl eframe::App for App {
                             }
                             Status::Disconnected(r) => format!("disconnected · {r}"),
                         };
-                        ui.colored_label(status_color(Some(&s.status)), "●");
+                        paint_dot(ui, status_color(Some(&s.status)));
                         ui.label(txt);
                     }
                 }
@@ -253,7 +253,7 @@ impl App {
                 let status = sessions.get(&p.id).map(|s| &s.status);
                 let selected = active == Some(p.id);
                 ui.horizontal(|ui| {
-                    ui.colored_label(status_color(status), "●");
+                    paint_dot(ui, status_color(status));
                     let resp = ui
                         .selectable_label(selected, &p.name)
                         .on_hover_text(format!("{}:{}", p.host, p.port));
@@ -338,7 +338,7 @@ impl App {
                 for id in &ids {
                     let session = &self.sessions[id];
                     let selected = self.active == Some(*id);
-                    ui.colored_label(status_color(Some(&session.status)), "●");
+                    paint_dot(ui, status_color(Some(&session.status)));
                     if ui.selectable_label(selected, &session.name).clicked() {
                         activate = Some(*id);
                     }
@@ -569,6 +569,13 @@ fn editor(
             ui.weak("<octets>");
         }
     }
+}
+
+/// Paint a small filled status dot inline (drawn, not a font glyph, so it always
+/// renders regardless of the available fonts).
+fn paint_dot(ui: &mut egui::Ui, color: egui::Color32) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, ui.spacing().interact_size.y), egui::Sense::hover());
+    ui.painter().circle_filled(rect.center(), 4.5, color);
 }
 
 /// A status-indicator colour chosen to read on both light and dark themes.
