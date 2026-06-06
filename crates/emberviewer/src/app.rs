@@ -465,14 +465,16 @@ impl App {
                             e.requested = false;
                         }
                     }
-                    NetEvent::Document(root) => {
+                    NetEvent::Document { roots, .. } => {
                         // Snapshot logged params' values, merge, then log changes.
                         let snaps: Vec<(Vec<u32>, Option<Value>)> = session
                             .logged
                             .iter()
                             .map(|p| (p.clone(), session.tree.get(p).and_then(|e| e.value.clone())))
                             .collect();
-                        session.tree.merge(root);
+                        for root in roots.iter() {
+                            session.tree.merge(root.clone());
+                        }
                         for (p, old) in snaps {
                             if let Some(e) = session.tree.get(&p) {
                                 if e.value.is_some() && e.value != old {

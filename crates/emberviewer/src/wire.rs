@@ -121,7 +121,7 @@ pub fn event_status(ev: &NetEvent) -> Option<WireStatus> {
         NetEvent::Error(message) => WireStatus::Error {
             message: message.clone(),
         },
-        NetEvent::Document(_) => return None,
+        NetEvent::Document { .. } => return None,
     })
 }
 
@@ -170,8 +170,13 @@ mod tests {
 
     #[test]
     fn document_events_have_no_status() {
+        use std::sync::Arc;
         assert!(event_status(&NetEvent::Connected).is_some());
-        assert!(event_status(&NetEvent::Document(dummy_root())).is_none());
+        assert!(event_status(&NetEvent::Document {
+            roots: Arc::new(vec![dummy_root()]),
+            raw: Arc::new(Vec::new()),
+        })
+        .is_none());
     }
 
     fn dummy_root() -> ember_proto::glow::Root {

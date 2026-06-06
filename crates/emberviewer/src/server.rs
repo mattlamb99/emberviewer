@@ -4,7 +4,8 @@
 //! every viewer (desktop + browsers) shares one connection per device.
 //!
 //! Wire vocabulary lives in [`ember_web_proto`]; documents cross as binary frames
-//! (re-encoded Glow BER), control as JSON. See [`crate::wire`] for the mapping.
+//! (the device's original Glow BER, forwarded verbatim), control as JSON. See
+//! [`crate::wire`] for the mapping.
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
@@ -14,7 +15,6 @@ use axum::extract::{Query, State};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::get;
 use axum::Router;
-use ember_proto::glow;
 use ember_web_proto::{encode_doc_frame, ClientMsg, ServerMsg, WireNode, WireProvider};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::oneshot;
@@ -334,12 +334,14 @@ async fn handle_client_msg(
 async fn forward_event(id: u64, ev: &crate::net::NetEvent, sender: &mut WsSink) {
     use crate::net::NetEvent;
     match ev {
-        NetEvent::Document(root) => {
-            if let Ok(ber) = glow::encode_root(root) {
-                let _ = sender
-                    .send(Message::Binary(encode_doc_frame(id, &ber).into()))
-                    .await;
-            }
+        NetEvent::Document { raw, .. } => {
+            // Forward the device's original BER bytes verbatim so the browser
+            // decodes byte-identically to what `ember-net` decoded. Re-encoding
+            // the parsed `roots` here was lossy for some providers (it dropped or
+            // mangled children — phantom/missing nodes in the web tree).
+            let _ = sender
+                .send(Message::Binary(encode_doc_frame(id, raw).into()))
+                .await;
         }
         other => {
             if let Some(status) = event_status(other) {

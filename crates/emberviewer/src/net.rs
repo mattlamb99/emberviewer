@@ -6,6 +6,8 @@
 //! drains [`NetEvent`]s each frame. Whenever an event is produced the connection
 //! task requests an egui repaint so the UI wakes up.
 
+use std::sync::Arc;
+
 use ember_proto::glow::{Root, Value};
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -50,8 +52,15 @@ pub enum NetCommand {
 pub enum NetEvent {
     /// Freshly connected (initial or after a reconnect).
     Connected,
-    /// A decoded Glow document to merge into the tree.
-    Document(Root),
+    /// The decoded Glow documents from one provider message, to merge into the
+    /// tree, plus the original BER bytes they came from. The desktop UI merges
+    /// `roots`; the server forwards `raw` verbatim so a browser decodes exactly
+    /// what `ember-net` decoded (re-encoding the parsed tree could be lossy for
+    /// vendor extensions the tolerant decoder keeps but the encoder can't restore).
+    Document {
+        roots: Arc<Vec<Root>>,
+        raw: Arc<Vec<u8>>,
+    },
     /// The connection dropped; will retry in `retry_in_secs`.
     Reconnecting { retry_in_secs: u64, reason: String },
     /// The connection ended for good (user disconnect or fatal).
