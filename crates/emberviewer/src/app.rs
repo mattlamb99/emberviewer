@@ -473,20 +473,26 @@ impl App {
                 let connected = sessions.contains_key(&p.id);
                 let status = sessions.get(&p.id).map(|s| &s.status);
                 let selected = active == Some(p.id);
-                // The whole row is a drag source.
-                let drag = ui.dnd_drag_source(
-                    egui::Id::new(("dragprov", p.id)),
-                    DragPayload(p.id),
-                    |ui| {
-                        ui.horizontal(|ui| {
-                            paint_dot(ui, status_color(status));
-                            ui.selectable_label(selected, &p.name)
-                                .on_hover_text(format!("{}:{}", p.host, p.port))
-                        })
-                        .inner
-                    },
-                );
-                let label_resp = drag.inner;
+                let label_resp = ui
+                    .horizontal(|ui| {
+                        paint_dot(ui, status_color(status));
+                        // A label that senses click AND drag: click connects,
+                        // drag moves it, secondary-click opens the menu.
+                        let mut text = egui::RichText::new(&p.name);
+                        if selected {
+                            text = text.background_color(ui.visuals().selection.bg_fill);
+                        }
+                        ui.add(
+                            egui::Label::new(text)
+                                .selectable(false)
+                                .sense(egui::Sense::click_and_drag()),
+                        )
+                        .on_hover_text(format!("{}:{}", p.host, p.port))
+                    })
+                    .inner;
+                if label_resp.dragged() {
+                    label_resp.dnd_set_drag_payload(DragPayload(p.id));
+                }
                 if label_resp.clicked() {
                     *action = Some(SidebarAction::Open(p.id));
                 }
