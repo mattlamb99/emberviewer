@@ -994,12 +994,14 @@ impl App {
                     }
                     for root in &roots {
                         render_filtered(
-                            ui, session, root, allowed, &opts, &mut commands, &mut visible,
+                            ui, session, root, allowed, &opts, true, &mut commands, &mut visible,
                         );
                     }
                 } else {
                     for root in &roots {
-                        render_entry(ui, session, root, &opts, &mut commands, &mut visible);
+                        render_entry(
+                            ui, session, root, &opts, true, &mut commands, &mut visible,
+                        );
                     }
                 }
             });
@@ -1031,12 +1033,14 @@ fn render_entry(
     session: &mut Session,
     path: &[u32],
     opts: &RenderOpts,
+    online: bool,
     commands: &mut Vec<NetCommand>,
     visible: &mut Vec<Vec<u32>>,
 ) {
     let Some(entry) = session.tree.get(path).cloned() else {
         return;
     };
+    let eff_online = online && entry.is_online;
 
     if entry.kind.is_expandable() {
         let is_open = session.open.get(path).copied().unwrap_or(false);
@@ -1047,10 +1051,14 @@ fn render_entry(
             false,
         );
         let next_open = header.is_open();
-        let heading = node_label(&entry, opts);
+        let mut heading = egui::RichText::new(node_label(&entry, opts));
+        if !eff_online {
+            heading = heading.weak().italics();
+        }
         let resp = header
             .show_header(ui, |ui| {
                 ui.label(heading)
+                    .on_hover_text(if eff_online { "" } else { "offline" })
                     .context_menu(|ui| context_copy(ui, &entry.path, &entry.identifier));
             })
             .body(|ui| {
@@ -1062,7 +1070,7 @@ fn render_entry(
                 }
                 let children = sorted_paths(&session.tree, &entry.children, opts.order_by);
                 for child in &children {
-                    render_entry(ui, session, child, opts, commands, visible);
+                    render_entry(ui, session, child, opts, eff_online, commands, visible);
                 }
                 if children.is_empty() && entry.matrix.is_none() && entry.function.is_none() {
                     ui.weak("…");
@@ -1081,7 +1089,7 @@ fn render_entry(
     } else {
         // A leaf parameter is on screen → eligible for a live subscription.
         visible.push(path.to_vec());
-        render_parameter(ui, session, &entry, opts, commands);
+        render_parameter(ui, session, &entry, opts, eff_online, commands);
     }
 }
 
@@ -1091,11 +1099,16 @@ fn render_parameter(
     session: &mut Session,
     entry: &crate::model::Entry,
     opts: &RenderOpts,
+    online: bool,
     commands: &mut Vec<NetCommand>,
 ) {
     let label = param_label(entry, opts);
     let logging = session.logged.contains(&entry.path);
+    let eff_online = online && entry.is_online;
     ui.horizontal(|ui| {
+        if !eff_online {
+            ui.disable();
+        }
         ui.add_space(8.0);
         // A red dot marks a parameter whose changes are being logged.
         if logging {
@@ -1137,7 +1150,7 @@ fn render_parameter(
             } else if entry.is_writable() {
                 editor(ui, session, entry, opts, commands);
             } else if let Some(v) = &entry.value {
-                ui.label(format_value(v));
+                ui.label(display_value(entry, v));
             } else {
                 ui.weak("—");
             }
@@ -1174,30 +1187,61 @@ fn editor(
             }
         }
         Some(Value::Integer(i)) => {
-            // Enum parameter → combo of labels; otherwise a numeric field.
-            if let Some(labels) = &entry.enumeration {
-                let mut sel = *i as usize;
-                let current = labels.get(sel).cloned().unwrap_or_else(|| i.to_string());
+            let i = *i;
+            // Enum → combo of (non-hidden) labels; ranged → slider; else a field.
+            if !entry.enum_entries.is_empty() {
+                let current = entry
+                    .enum_label(i)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| i.to_string());
                 egui::ComboBox::from_id_salt(("enum", &entry.path))
                     .selected_text(current)
                     .show_ui(ui, |ui| {
-                        for (idx, label) in labels.iter().enumerate() {
-                            if ui.selectable_value(&mut sel, idx, label).clicked() {
-                                commands
-                                    .push(NetCommand::SetValue(path.clone(), Value::Integer(idx as i64)));
+                        for ent in entry.enum_entries.iter().filter(|e| !e.hidden) {
+                            let mut sel = i;
+                            if ui.selectable_value(&mut sel, ent.value, &ent.label).clicked() {
+                                commands.push(NetCommand::SetValue(
+                                    path.clone(),
+                                    Value::Integer(ent.value),
+                                ));
                             }
                         }
                     });
+            } else if let (Some(Value::Integer(lo)), Some(Value::Integer(hi))) =
+                (&entry.minimum, &entry.maximum)
+            {
+                let mut v = i;
+                let factor = entry.factor.unwrap_or(1).max(1) as f64;
+                let suffix = format_suffix(entry);
+                let resp = ui.add(
+                    egui::Slider::new(&mut v, *lo..=*hi)
+                        .custom_formatter(move |n, _| {
+                            format!("{}{}", n / factor, suffix)
+                        }),
+                );
+                if resp.changed() {
+                    commands.push(NetCommand::SetValue(path, Value::Integer(v)));
+                }
             } else {
                 text_commit_editor(ui, session, entry, commands, |s| {
                     s.trim().parse::<i64>().ok().map(Value::Integer)
                 });
             }
         }
-        Some(Value::Real(_)) => {
-            text_commit_editor(ui, session, entry, commands, |s| {
-                s.trim().parse::<f64>().ok().map(|f| Value::Real(f.into()))
-            });
+        Some(Value::Real(r)) => {
+            if let (Some(Value::Real(lo)), Some(Value::Real(hi))) =
+                (&entry.minimum, &entry.maximum)
+            {
+                let mut v = r.to_f64();
+                let resp = ui.add(egui::Slider::new(&mut v, lo.to_f64()..=hi.to_f64()));
+                if resp.changed() {
+                    commands.push(NetCommand::SetValue(path, Value::Real(v.into())));
+                }
+            } else {
+                text_commit_editor(ui, session, entry, commands, |s| {
+                    s.trim().parse::<f64>().ok().map(|f| Value::Real(f.into()))
+                });
+            }
         }
         Some(Value::String(_)) | None => {
             text_commit_editor(ui, session, entry, commands, |s| {
@@ -1207,6 +1251,45 @@ fn editor(
         Some(Value::Octets(_)) => {
             ui.weak("<octets>");
         }
+    }
+}
+
+/// The literal text after a printf conversion specifier in a parameter's format
+/// (e.g. "%d dB" → " dB"), used as a slider/value unit suffix.
+fn format_suffix(entry: &crate::model::Entry) -> String {
+    let Some(fmt) = &entry.format else {
+        return String::new();
+    };
+    if let Some(pct) = fmt.find('%') {
+        let rest = &fmt[pct + 1..];
+        if let Some(conv) = rest.find(|c: char| "diouxXeEfFgGsc".contains(c)) {
+            return rest[conv + 1..].to_string();
+        }
+    }
+    String::new()
+}
+
+/// Human-readable value: enum label, or factor/format-applied number, else raw.
+fn display_value(entry: &crate::model::Entry, v: &Value) -> String {
+    match v {
+        Value::Integer(i) => {
+            if let Some(lbl) = entry.enum_label(*i) {
+                lbl.to_string()
+            } else {
+                let factor = entry.factor.unwrap_or(1).max(1);
+                if factor != 1 {
+                    format!("{}{}", *i as f64 / factor as f64, format_suffix(entry))
+                } else if entry.format.is_some() {
+                    format!("{i}{}", format_suffix(entry))
+                } else {
+                    i.to_string()
+                }
+            }
+        }
+        Value::Real(r) if entry.format.is_some() => {
+            format!("{}{}", r.to_f64(), format_suffix(entry))
+        }
+        _ => format_value(v),
     }
 }
 
@@ -1310,6 +1393,7 @@ fn render_filtered(
     path: &[u32],
     allowed: &HashSet<Vec<u32>>,
     opts: &RenderOpts,
+    online: bool,
     commands: &mut Vec<NetCommand>,
     visible: &mut Vec<Vec<u32>>,
 ) {
@@ -1319,18 +1403,19 @@ fn render_filtered(
     let Some(entry) = session.tree.get(path).cloned() else {
         return;
     };
+    let eff_online = online && entry.is_online;
     if entry.kind.is_expandable() {
         ui.label(node_label(&entry, opts))
             .context_menu(|ui| context_copy(ui, &entry.path, &entry.identifier));
         ui.indent(("filt", path), |ui| {
             let children = sorted_paths(&session.tree, &entry.children, opts.order_by);
             for child in &children {
-                render_filtered(ui, session, child, allowed, opts, commands, visible);
+                render_filtered(ui, session, child, allowed, opts, eff_online, commands, visible);
             }
         });
     } else {
         visible.push(path.to_vec());
-        render_parameter(ui, session, &entry, opts, commands);
+        render_parameter(ui, session, &entry, opts, eff_online, commands);
     }
 }
 
@@ -1362,11 +1447,20 @@ fn render_matrix(
             .weak(),
     );
 
-    let (cols, rows) = if opts.matrix_targets_on_top {
-        (m.target_count, m.source_count)
+    // Columns/rows iterate the actual signal numbers (sparse on real devices).
+    let (col_signals, row_signals): (&[u32], &[u32]) = if opts.matrix_targets_on_top {
+        (&m.targets, &m.sources)
     } else {
-        (m.source_count, m.target_count)
+        (&m.sources, &m.targets)
     };
+    let (col_labels, row_labels) = if opts.matrix_targets_on_top {
+        (&m.target_labels, &m.source_labels)
+    } else {
+        (&m.source_labels, &m.target_labels)
+    };
+    let col_kind = if opts.matrix_targets_on_top { "target" } else { "source" };
+    let row_kind = if opts.matrix_targets_on_top { "source" } else { "target" };
+
     let dark = ui.visuals().dark_mode;
     let (light_row, dark_row) = if dark {
         (egui::Color32::from_gray(40), egui::Color32::from_gray(72))
@@ -1376,10 +1470,8 @@ fn render_matrix(
     let accent = ui.visuals().selection.bg_fill;
 
     const CELL: f32 = 18.0;
-    // Fixed-size cells keep columns and rows the same pitch (an auto-sized grid
-    // makes columns as wide as the header text).
-    let draw_label = |ui: &mut egui::Ui, text: &str, strong: bool| {
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(CELL, CELL), egui::Sense::hover());
+    let draw_label = |ui: &mut egui::Ui, text: &str, strong: bool| -> egui::Response {
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(CELL, CELL), egui::Sense::hover());
         ui.painter().text(
             rect.center(),
             egui::Align2::CENTER_CENTER,
@@ -1391,10 +1483,15 @@ fn render_matrix(
                 ui.visuals().weak_text_color()
             },
         );
+        resp
+    };
+    let head_tip = |labels: &std::collections::BTreeMap<u32, String>, kind: &str, n: u32| {
+        match labels.get(&n) {
+            Some(name) => format!("{kind} {n}: {name}"),
+            None => format!("{kind} {n}"),
+        }
     };
 
-    // A resizable viewport: drag the bottom-right handle to fit more of a large
-    // matrix on screen. The scroll area inside fills it.
     let avail_w = ui.available_width();
     egui::Resize::default()
         .id_salt(("mresize", &path))
@@ -1406,23 +1503,20 @@ fn render_matrix(
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(1.0, 1.0);
-            // Header row: corner + column indices.
             ui.horizontal(|ui| {
                 draw_label(ui, "", false);
-                for c in 0..cols {
-                    draw_label(ui, &c.to_string(), false);
+                for &c in col_signals {
+                    draw_label(ui, &c.to_string(), false)
+                        .on_hover_text(head_tip(col_labels, col_kind, c));
                 }
             });
-            for r in 0..rows {
+            for (ri, &r) in row_signals.iter().enumerate() {
                 ui.horizontal(|ui| {
-                    draw_label(ui, &r.to_string(), true);
-                    let row_bg = if r % 2 == 0 { light_row } else { dark_row };
-                    for c in 0..cols {
-                        let (t, s) = if opts.matrix_targets_on_top {
-                            (c, r)
-                        } else {
-                            (r, c)
-                        };
+                    draw_label(ui, &r.to_string(), true)
+                        .on_hover_text(head_tip(row_labels, row_kind, r));
+                    let row_bg = if ri % 2 == 0 { light_row } else { dark_row };
+                    for &c in col_signals {
+                        let (t, s) = if opts.matrix_targets_on_top { (c, r) } else { (r, c) };
                         let on = m.connections.get(&t).is_some_and(|set| set.contains(&s));
                         let (rect, resp) =
                             ui.allocate_exact_size(egui::vec2(CELL, CELL), egui::Sense::click());
@@ -1434,7 +1528,10 @@ fn render_matrix(
                             row_bg
                         };
                         ui.painter().rect_filled(rect, 2.0, fill);
-                        let resp = resp.on_hover_text(format!("target {t} ← source {s}"));
+                        let tname = m.target_labels.get(&t).map(|n| format!(" ({n})")).unwrap_or_default();
+                        let sname = m.source_labels.get(&s).map(|n| format!(" ({n})")).unwrap_or_default();
+                        let resp = resp
+                            .on_hover_text(format!("target {t}{tname} ← source {s}{sname}"));
                         if resp.clicked() {
                             let operation = if on {
                                 glow::connection_operation::DISCONNECT

@@ -37,8 +37,27 @@ pub struct MatrixInfo {
     pub mtype: i32,
     pub target_count: u32,
     pub source_count: u32,
+    /// Actual target signal numbers (sparse on real devices); falls back to
+    /// `0..target_count` for linear matrices that omit explicit targets.
+    pub targets: Vec<u32>,
+    /// Actual source signal numbers.
+    pub sources: Vec<u32>,
     /// target number -> connected source numbers.
     pub connections: BTreeMap<u32, BTreeSet<u32>>,
+    /// Resolved target/source names, keyed by signal number (from label nodes).
+    pub target_labels: BTreeMap<u32, String>,
+    pub source_labels: BTreeMap<u32, String>,
+    /// `labels[].basePath` nodes to fetch for names (RELATIVE-OID arcs).
+    pub label_paths: Vec<Vec<u32>>,
+}
+
+/// One enumeration choice for an enum parameter.
+#[derive(Debug, Clone)]
+pub struct EnumEntry {
+    pub value: i64,
+    pub label: String,
+    /// `~`-prefixed entries are hidden from pickers but keep their index slot.
+    pub hidden: bool,
 }
 
 /// Function detail, attached to a function entry.
@@ -65,10 +84,20 @@ pub struct Entry {
     pub value: Option<Value>,
     pub param_type: Option<i32>,
     pub access: i32,
-    /// Parsed enumeration labels, if this is an enum parameter.
-    pub enumeration: Option<Vec<String>>,
+    /// Enumeration choices (from `enumeration` or `enumMap`), if an enum.
+    pub enum_entries: Vec<EnumEntry>,
     pub minimum: Option<Value>,
     pub maximum: Option<Value>,
+    /// Printf-style display format (e.g. "%d dB").
+    pub format: Option<String>,
+    /// Display divisor for integer values (raw / factor).
+    pub factor: Option<i32>,
+    /// Stream identifier, if this parameter's value arrives via a stream.
+    pub stream_identifier: Option<i32>,
+    /// Stream descriptor (format, byte offset) for unpacking a packed stream.
+    pub stream_descriptor: Option<(i32, i32)>,
+    /// False when the element (or an ancestor) is offline.
+    pub is_online: bool,
     /// Ordered child paths discovered so far.
     pub children: Vec<Vec<u32>>,
     /// Whether we have already issued `getDirectory` for this node's children.
@@ -89,14 +118,27 @@ impl Entry {
             value: None,
             param_type: None,
             access: glow::access::READ,
-            enumeration: None,
+            enum_entries: Vec::new(),
             minimum: None,
             maximum: None,
+            format: None,
+            factor: None,
+            stream_identifier: None,
+            stream_descriptor: None,
+            is_online: true,
             children: Vec::new(),
             requested: false,
             matrix: None,
             function: None,
         }
+    }
+
+    /// The label for an enum value, if known and visible.
+    pub fn enum_label(&self, value: i64) -> Option<&str> {
+        self.enum_entries
+            .iter()
+            .find(|e| e.value == value)
+            .map(|e| e.label.as_str())
     }
 
     /// Whether this parameter is writable.
@@ -122,6 +164,9 @@ pub struct TreeModel {
     pub roots: Vec<Vec<u32>>,
     /// Most recent function results, keyed by invocation id.
     pub invocation_results: HashMap<i32, InvocationOutcome>,
+    /// stream identifier -> parameter paths, for routing StreamCollections.
+    /// (Multiple parameters can share one identifier for packed streams.)
+    pub stream_index: HashMap<i32, Vec<Vec<u32>>>,
 }
 
 impl TreeModel {
@@ -156,7 +201,19 @@ impl TreeModel {
                     );
                 }
             }
-            Root::Streams(_) => {} // Phase 5
+            Root::Streams(coll) => {
+                for entry in coll.0 {
+                    let se = entry.0;
+                    let Some(paths) = self.stream_index.get(&se.stream_identifier).cloned() else {
+                        continue;
+                    };
+                    for path in paths {
+                        if let Some(e) = self.entries.get_mut(&path) {
+                            e.value = Some(stream_value_for(e, &se.stream_value));
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -224,6 +281,13 @@ impl TreeModel {
             if c.description.is_some() {
                 e.description = c.description;
             }
+            if let Some(online) = c.is_online {
+                // Coming back online → refetch this subtree.
+                if online && !e.is_online {
+                    e.requested = false;
+                }
+                e.is_online = online;
+            }
         }
         if let Some(coll) = children {
             for entry in coll.0 {
@@ -257,8 +321,53 @@ impl TreeModel {
             if c.maximum.is_some() {
                 e.maximum = c.maximum.map(minmax_to_value);
             }
+            if c.format.is_some() {
+                e.format = c.format;
+            }
+            if let Some(f) = c.factor {
+                e.factor = Some(f);
+            }
+            if let Some(sid) = c.stream_identifier {
+                e.stream_identifier = Some(sid);
+            }
+            if let Some(sd) = &c.stream_descriptor {
+                e.stream_descriptor = Some((sd.format, sd.offset));
+            }
+            if let Some(online) = c.is_online {
+                e.is_online = online;
+            }
+            // Enumeration: newline-separated, with `~`-hidden entries; or enumMap.
             if let Some(en) = c.enumeration {
-                e.enumeration = Some(en.split('\n').map(|s| s.to_string()).collect());
+                e.enum_entries = en
+                    .split('\n')
+                    .enumerate()
+                    .map(|(i, s)| {
+                        let hidden = s.starts_with('~');
+                        EnumEntry {
+                            value: i as i64,
+                            label: s.trim_start_matches('~').to_string(),
+                            hidden,
+                        }
+                    })
+                    .collect();
+            }
+            if let Some(map) = c.enum_map {
+                e.enum_entries = map
+                    .0
+                    .into_iter()
+                    .map(|pair| EnumEntry {
+                        value: pair.0.entry_integer as i64,
+                        label: pair.0.entry_string,
+                        hidden: false,
+                    })
+                    .collect();
+            }
+        }
+        // Register this parameter for stream routing (after the `e` borrow ends).
+        if let Some(sid) = self.entries.get(&path).and_then(|e| e.stream_identifier) {
+            let paths = self.stream_index.entry(sid).or_default();
+            if !paths.contains(&path) {
+                paths.push(path.clone());
             }
         }
     }
@@ -267,8 +376,8 @@ impl TreeModel {
         &mut self,
         path: Vec<u32>,
         contents: Option<glow::MatrixContents>,
-        _targets: Option<glow::TargetCollection>,
-        _sources: Option<glow::SourceCollection>,
+        targets: Option<glow::TargetCollection>,
+        sources: Option<glow::SourceCollection>,
         connections: Option<glow::ConnectionCollection>,
     ) {
         self.upsert(path.clone(), Kind::Matrix);
@@ -294,6 +403,28 @@ impl TreeModel {
             if let Some(sc) = c.source_count {
                 info.source_count = sc.max(0) as u32;
             }
+            // Label sub-node base paths (resolved to source/target names later).
+            if let Some(labels) = &c.labels {
+                info.label_paths = labels
+                    .0
+                    .iter()
+                    .map(|l| l.0.base_path.arcs())
+                    .collect();
+            }
+        }
+        // Explicit target/source signal numbers (sparse on real devices).
+        if let Some(t) = targets {
+            info.targets = t.0.iter().map(|e| e.0.number.max(0) as u32).collect();
+        }
+        if let Some(s) = sources {
+            info.sources = s.0.iter().map(|e| e.0.number.max(0) as u32).collect();
+        }
+        // Fall back to dense 0..count when explicit lists are absent (linear).
+        if info.targets.is_empty() {
+            info.targets = (0..info.target_count).collect();
+        }
+        if info.sources.is_empty() {
+            info.sources = (0..info.source_count).collect();
         }
         if let Some(conns) = connections {
             for entry in conns.0 {
@@ -378,6 +509,75 @@ fn minmax_to_value(m: glow::MinMax) -> Value {
         glow::MinMax::Integer(i) => Value::Integer(i),
         glow::MinMax::Real(r) => Value::Real(r),
     }
+}
+
+/// Resolve a stream entry's value for a parameter. A direct (non-octet) value is
+/// used as-is; a packed octet-string is unpacked per the parameter's
+/// StreamDescriptor (format + byte offset).
+fn stream_value_for(entry: &Entry, stream_value: &Value) -> Value {
+    match (stream_value, entry.stream_descriptor) {
+        (Value::Octets(bytes), Some((format, offset))) => {
+            unpack_stream(bytes, format, offset.max(0) as usize).unwrap_or_else(|| stream_value.clone())
+        }
+        _ => stream_value.clone(),
+    }
+}
+
+/// Unpack one numeric value from packed stream octets at `offset` per
+/// `StreamFormat` (X.690 Glow stream formats).
+fn unpack_stream(bytes: &[u8], format: i32, offset: usize) -> Option<Value> {
+    use glow::Real;
+    macro_rules! rd {
+        ($n:expr) => {{
+            let end = offset + $n;
+            if end > bytes.len() {
+                return None;
+            }
+            &bytes[offset..end]
+        }};
+    }
+    let i = |le: bool, n: usize, signed: bool| -> i64 {
+        let b = &bytes[offset..offset + n];
+        let mut v: u64 = 0;
+        if le {
+            for (k, &x) in b.iter().enumerate() {
+                v |= (x as u64) << (8 * k);
+            }
+        } else {
+            for &x in b {
+                v = (v << 8) | x as u64;
+            }
+        }
+        if signed && n < 8 && (v >> (8 * n - 1)) & 1 == 1 {
+            v |= !0u64 << (8 * n); // sign-extend
+        }
+        v as i64
+    };
+    Some(match format {
+        0 => Value::Integer(*rd!(1).first()? as i64), // u8
+        8 => Value::Integer(*rd!(1).first()? as i8 as i64), // s8
+        2 => Value::Integer(i(false, 2, false)),
+        3 => Value::Integer(i(true, 2, false)),
+        4 => Value::Integer(i(false, 4, false)),
+        5 => Value::Integer(i(true, 4, false)),
+        6 => Value::Integer(i(false, 8, false)),
+        7 => Value::Integer(i(true, 8, false)),
+        10 => Value::Integer(i(false, 2, true)),
+        11 => Value::Integer(i(true, 2, true)),
+        12 => Value::Integer(i(false, 4, true)),
+        13 => Value::Integer(i(true, 4, true)),
+        14 => Value::Integer(i(false, 8, true)),
+        15 => Value::Integer(i(true, 8, true)),
+        20 => Value::Real(Real::from_f64(
+            f32::from_be_bytes(rd!(4).try_into().ok()?) as f64,
+        )),
+        21 => Value::Real(Real::from_f64(
+            f32::from_le_bytes(rd!(4).try_into().ok()?) as f64,
+        )),
+        22 => Value::Real(Real::from_f64(f64::from_be_bytes(rd!(8).try_into().ok()?))),
+        23 => Value::Real(Real::from_f64(f64::from_le_bytes(rd!(8).try_into().ok()?))),
+        _ => return None,
+    })
 }
 
 #[cfg(test)]
@@ -475,10 +675,9 @@ mod tests {
         };
         tree.merge(doc);
         let e = tree.get(&[5]).unwrap();
-        assert_eq!(
-            e.enumeration.as_deref(),
-            Some(["Red".to_string(), "Green".into(), "Blue".into()].as_slice())
-        );
+        let labels: Vec<&str> = e.enum_entries.iter().map(|e| e.label.as_str()).collect();
+        assert_eq!(labels, ["Red", "Green", "Blue"]);
+        assert_eq!(e.enum_label(2), Some("Blue"));
 
         // A later value-only update (as a provider push) keeps the identifier.
         let update = {
