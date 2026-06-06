@@ -201,6 +201,22 @@ impl eframe::App for WebApp {
                     {
                         self.dark = !self.dark;
                     }
+                    ui.separator();
+                    // Project links. The GitHub Octocat (special_emojis::GITHUB)
+                    // and the globe (U+1F310) are both in egui's bundled fonts —
+                    // verified to render, unlike most symbol glyphs here.
+                    icon_link(
+                        ui,
+                        '\u{1F310}',
+                        "https://mattlamb99.github.io/emberviewer",
+                        "Website / docs",
+                    );
+                    icon_link(
+                        ui,
+                        egui::special_emojis::GITHUB,
+                        "https://github.com/mattlamb99/emberviewer",
+                        "GitHub repository",
+                    );
                     if self.open_lan {
                         ui.label(egui::RichText::new("open-LAN").small().weak());
                     }
@@ -708,6 +724,12 @@ fn param_editor(
             ui.weak("—");
         }
     }
+}
+
+/// A clickable icon glyph in the top bar that opens `url` in a new tab.
+fn icon_link(ui: &mut egui::Ui, glyph: char, url: &str, hover: &str) {
+    let text = egui::RichText::new(glyph).size(18.0).color(ACCENT);
+    ui.hyperlink_to(text, url).on_hover_text(hover);
 }
 
 fn status_text(st: &WireStatus) -> String {
