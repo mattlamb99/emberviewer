@@ -185,6 +185,7 @@ impl TreeModel {
                 for entry in coll.0 {
                     self.ingest_root_element(entry.0);
                 }
+                self.resolve_matrix_labels();
             }
             Root::InvocationResult(ir) => {
                 if let Some(id) = ir.invocation_id {
@@ -479,6 +480,65 @@ impl TreeModel {
                 args: c.arguments.map(map_items).unwrap_or_default(),
                 result: c.result.map(map_items).unwrap_or_default(),
             });
+        }
+    }
+
+    /// Resolve matrix source/target names from fetched label sub-trees.
+    ///
+    /// Convention (seen on Lawo Ruby): a matrix's `labels[].basePath` points to a
+    /// node containing `targets`/`sources` sub-nodes, each holding string
+    /// parameters whose *number* is the signal id and whose *value* is the name.
+    fn resolve_matrix_labels(&mut self) {
+        let matrices: Vec<(Vec<u32>, Vec<Vec<u32>>)> = self
+            .entries
+            .values()
+            .filter_map(|e| {
+                e.matrix
+                    .as_ref()
+                    .filter(|m| !m.label_paths.is_empty())
+                    .map(|m| (e.path.clone(), m.label_paths.clone()))
+            })
+            .collect();
+
+        for (mpath, label_paths) in matrices {
+            let mut targets = BTreeMap::new();
+            let mut sources = BTreeMap::new();
+            for base in &label_paths {
+                let Some(base_entry) = self.entries.get(base) else { continue };
+                for axis_path in base_entry.children.clone() {
+                    let Some(axis) = self.entries.get(&axis_path) else { continue };
+                    let id = axis.identifier.to_lowercase();
+                    let map = if id.contains("target") {
+                        &mut targets
+                    } else if id.contains("source") {
+                        &mut sources
+                    } else {
+                        continue;
+                    };
+                    for pp in axis.children.clone() {
+                        let Some(pe) = self.entries.get(&pp) else { continue };
+                        if let Some(Value::String(name)) = &pe.value {
+                            if let Some(num) = pp.last() {
+                                map.insert(*num, name.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            if targets.is_empty() && sources.is_empty() {
+                continue;
+            }
+            if let Some(m) = self.entries.get_mut(&mpath).and_then(|e| e.matrix.as_mut()) {
+                // Use the real (sparse) signal numbers from the labels for the grid.
+                if !targets.is_empty() {
+                    m.targets = targets.keys().copied().collect();
+                    m.target_labels = targets;
+                }
+                if !sources.is_empty() {
+                    m.sources = sources.keys().copied().collect();
+                    m.source_labels = sources;
+                }
+            }
         }
     }
 

@@ -45,6 +45,8 @@ struct Session {
     popped: Vec<PoppedMeter>,
     /// Auto-tracked value range per meter path (for params without min/max).
     meter_range: HashMap<Vec<u32>, (f64, f64)>,
+    /// Label sub-tree paths already requested (dedup for eager matrix-label fetch).
+    label_fetch: HashSet<Vec<u32>>,
 }
 
 /// A meter popped into its own always-pinnable window.
@@ -251,6 +253,7 @@ impl App {
                 selected: None,
                 popped: Vec::new(),
                 meter_range: HashMap::new(),
+                label_fetch: HashSet::new(),
             },
         );
         self.active = Some(id);
@@ -1275,11 +1278,11 @@ fn render_entry(
             .body(|ui| {
                 // Matrix grid / function form, when this node is one.
                 if let Some(m) = &entry.matrix {
-                    // Fetch label sub-nodes (source/target names) on first view.
-                    for lp in &m.label_paths {
-                        if session.tree.get(lp).is_none() {
-                            commands.push(NetCommand::GetDirectory(lp.clone()));
-                        }
+                    // Eagerly fetch each label sub-tree: basePath → targets/sources
+                    // → string params (number = signal id, value = name).
+                    let bases = m.label_paths.clone();
+                    for base in &bases {
+                        fetch_label_subtree(session, base, commands);
                     }
                     render_matrix(ui, &entry, m, opts, commands);
                 } else if let Some(f) = &entry.function {
@@ -1542,6 +1545,35 @@ fn display_value(entry: &crate::model::Entry, v: &Value) -> String {
             format!("{}{}", r.to_f64(), format_suffix(entry))
         }
         _ => format_value(v),
+    }
+}
+
+/// Eagerly fetch a matrix label sub-tree so source/target names resolve:
+/// request the base node, then its `targets`/`sources` children (whose
+/// getDirectory returns the label string params). Deduped via `label_fetch`.
+fn fetch_label_subtree(session: &mut Session, base: &[u32], commands: &mut Vec<NetCommand>) {
+    // Request the base node itself once.
+    if session.tree.get(base).is_none() {
+        if session.label_fetch.insert(base.to_vec()) {
+            commands.push(NetCommand::GetDirectory(base.to_vec()));
+        }
+        return;
+    }
+    // Request each child node (targets/sources) once.
+    let children = session
+        .tree
+        .get(base)
+        .map(|e| e.children.clone())
+        .unwrap_or_default();
+    for child in children {
+        let is_node = session
+            .tree
+            .get(&child)
+            .map(|e| e.kind.is_expandable())
+            .unwrap_or(false);
+        if is_node && session.label_fetch.insert(child.clone()) {
+            commands.push(NetCommand::GetDirectory(child));
+        }
     }
 }
 

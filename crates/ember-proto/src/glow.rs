@@ -419,9 +419,9 @@ pub struct ParameterContents {
     pub schema_identifiers: Option<EmberString>,
     // Tolerate vendor extension fields.
     #[rasn(tag(explicit(18)))]
-    pub _ext18: Option<Any>,
+    pub ext18: Option<Any>,
     #[rasn(tag(explicit(19)))]
-    pub _ext19: Option<Any>,
+    pub ext19: Option<Any>,
 }
 
 /// `Parameter ::= [APPLICATION 1] IMPLICIT SEQUENCE`.
@@ -470,11 +470,11 @@ pub struct NodeContents {
     #[rasn(tag(explicit(4)))]
     pub schema_identifiers: Option<Any>,
     #[rasn(tag(explicit(5)))]
-    pub _ext5: Option<Any>,
+    pub ext5: Option<Any>,
     #[rasn(tag(explicit(8)))]
-    pub _ext8: Option<Any>,
+    pub ext8: Option<Any>,
     #[rasn(tag(explicit(10)))]
-    pub _ext10: Option<Any>,
+    pub ext10: Option<Any>,
 }
 
 /// `Node ::= [APPLICATION 3] IMPLICIT SEQUENCE`.
@@ -638,9 +638,9 @@ pub struct MatrixContents {
     pub schema_identifiers: Option<EmberString>,
     // Tolerate vendor extension fields (consume so SET parsing doesn't abort).
     #[rasn(tag(explicit(12)))]
-    pub _ext12: Option<Any>,
+    pub ext12: Option<Any>,
     #[rasn(tag(explicit(13)))]
-    pub _ext13: Option<Any>,
+    pub ext13: Option<Any>,
 }
 
 /// `Target ::= [APPLICATION 14] IMPLICIT Signal`, `Signal ::= SEQUENCE { number [0] }`.
