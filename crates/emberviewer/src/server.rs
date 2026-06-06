@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
-use axum::response::{Html, IntoResponse, Json, Response};
+use axum::response::{IntoResponse, Json, Response};
 use axum::routing::get;
 use axum::Router;
 use ember_proto::glow;
@@ -98,12 +98,49 @@ pub fn start(
     })
 }
 
+/// The embedded web UI bundle (built separately via wasm-bindgen).
+#[derive(rust_embed::RustEmbed)]
+#[folder = "web-dist/"]
+struct WebAssets;
+
 fn router(state: ServerState) -> Router {
     Router::new()
-        .route("/", get(index))
         .route("/api/providers", get(providers))
         .route("/ws", get(ws_upgrade))
+        // The app shell (HTML/JS/WASM) is public; access control is on the data
+        // (`/api/providers`) and the WebSocket. The token travels in the page URL.
+        .fallback(static_asset)
         .with_state(state)
+}
+
+/// Serve an embedded asset (or `index.html` for `/`).
+async fn static_asset(uri: axum::http::Uri) -> Response {
+    let path = uri.path().trim_start_matches('/');
+    let path = if path.is_empty() { "index.html" } else { path };
+    match WebAssets::get(path) {
+        Some(file) => (
+            [(axum::http::header::CONTENT_TYPE, mime_for(path))],
+            file.data,
+        )
+            .into_response(),
+        None => (axum::http::StatusCode::NOT_FOUND, "not found").into_response(),
+    }
+}
+
+/// Content type for the handful of bundle asset kinds (`application/wasm` is
+/// required for streaming instantiation).
+fn mime_for(path: &str) -> &'static str {
+    if path.ends_with(".html") {
+        "text/html; charset=utf-8"
+    } else if path.ends_with(".js") {
+        "text/javascript; charset=utf-8"
+    } else if path.ends_with(".wasm") {
+        "application/wasm"
+    } else if path.ends_with(".css") {
+        "text/css; charset=utf-8"
+    } else {
+        "application/octet-stream"
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -123,20 +160,6 @@ fn authorized(s: &ServerState, token: Option<&str>) -> bool {
 
 fn unauthorized() -> Response {
     (axum::http::StatusCode::UNAUTHORIZED, "unauthorized").into_response()
-}
-
-/// Placeholder page until the wasm bundle is embedded (Phase 6).
-async fn index(State(s): State<ServerState>, Query(q): Query<AuthQuery>) -> Response {
-    if !authorized(&s, q.token.as_deref()) {
-        return unauthorized();
-    }
-    Html(
-        "<!doctype html><meta charset=utf-8><title>emberviewer</title>\
-         <body style=\"font-family:system-ui;margin:3rem\">\
-         <h1>emberviewer — server mode</h1>\
-         <p>The browser app isn't bundled yet. The API and WebSocket are live.</p>",
-    )
-    .into_response()
 }
 
 /// The provider list a browser may open.
@@ -421,6 +444,33 @@ mod tests {
             let ok = http_get(port, "/api/providers?token=secret").await;
             assert!(ok.starts_with("HTTP/1.1 200"), "expected 200");
             assert!(ok.contains("Ruby"), "provider name missing from body");
+        });
+    }
+
+    #[test]
+    fn serves_the_web_shell_without_a_token() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let reg = HubRegistry::new(rt.handle().clone(), egui::Context::default());
+        let cat: Catalog = Arc::new(Mutex::new(Vec::new()));
+        let h = start(
+            rt.handle(),
+            reg,
+            cat,
+            ServerConfig {
+                port: 0,
+                token: "secret".into(),
+                open_lan: false,
+                read_only: false,
+                keepalive: false,
+            },
+        )
+        .unwrap();
+        let port = h.bound.port();
+        rt.block_on(async {
+            // The app shell is public (no token); content-type is HTML.
+            let resp = http_get(port, "/").await;
+            assert!(resp.starts_with("HTTP/1.1 200"), "expected 200 for /");
+            assert!(resp.contains("text/html"), "index should be html");
         });
     }
 }
