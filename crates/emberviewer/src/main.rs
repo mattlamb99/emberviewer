@@ -1,5 +1,7 @@
 //! Ember+ viewer desktop application.
 
+// A complete address-book API; not every method is wired into the UI yet.
+#[allow(dead_code)]
 mod address_book;
 mod app;
 mod model;

@@ -28,10 +28,13 @@ pub enum NetCommand {
 /// An event from a connection task to the UI.
 #[derive(Debug)]
 pub enum NetEvent {
+    /// Freshly connected (initial or after a reconnect).
     Connected,
     /// A decoded Glow document to merge into the tree.
     Document(Root),
-    /// The connection ended; carries an optional reason.
+    /// The connection dropped; will retry in `retry_in_secs`.
+    Reconnecting { retry_in_secs: u64, reason: String },
+    /// The connection ended for good (user disconnect or fatal).
     Disconnected(Option<String>),
     /// A non-fatal error.
     Error(String),
@@ -68,79 +71,108 @@ impl ConnectionHandle {
     }
 }
 
+const MAX_BACKOFF_SECS: u64 = 30;
+
 async fn run_connection(
     addr: String,
     mut cmd_rx: tokio_mpsc::UnboundedReceiver<NetCommand>,
     evt_tx: mpsc::Sender<NetEvent>,
     ctx: egui::Context,
 ) {
-    // Helper to emit an event and wake the UI.
-    macro_rules! emit {
-        ($e:expr) => {{
-            if evt_tx.send($e).is_err() {
-                return;
-            }
-            ctx.request_repaint();
-        }};
-    }
-
-    let conn = match Connection::connect(&addr).await {
-        Ok(c) => c,
-        Err(e) => {
-            emit!(NetEvent::Disconnected(Some(e.to_string())));
-            return;
-        }
+    let emit = |e: NetEvent| -> bool {
+        let ok = evt_tx.send(e).is_ok();
+        ctx.request_repaint();
+        ok
     };
-    emit!(NetEvent::Connected);
 
+    let mut backoff = 1u64;
+    loop {
+        match Connection::connect(&addr).await {
+            Ok(conn) => {
+                backoff = 1; // reset on a successful connect
+                if !emit(NetEvent::Connected) {
+                    return;
+                }
+                match run_session(conn, &mut cmd_rx, &emit).await {
+                    SessionEnd::UserDisconnect => {
+                        emit(NetEvent::Disconnected(None));
+                        return;
+                    }
+                    SessionEnd::Dropped(reason) => {
+                        if !emit(NetEvent::Reconnecting {
+                            retry_in_secs: backoff,
+                            reason,
+                        }) {
+                            return;
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                if !emit(NetEvent::Reconnecting {
+                    retry_in_secs: backoff,
+                    reason: e.to_string(),
+                }) {
+                    return;
+                }
+            }
+        }
+
+        // Wait out the backoff, but let a Disconnect command cancel the retry.
+        tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_secs(backoff)) => {}
+            cmd = cmd_rx.recv() => {
+                if matches!(cmd, Some(NetCommand::Disconnect) | None) {
+                    emit(NetEvent::Disconnected(None));
+                    return;
+                }
+            }
+        }
+        backoff = (backoff * 2).min(MAX_BACKOFF_SECS);
+    }
+}
+
+/// Why a session loop ended.
+enum SessionEnd {
+    UserDisconnect,
+    Dropped(String),
+}
+
+/// Drive one live connection until it drops or the user disconnects.
+async fn run_session(
+    conn: Connection,
+    cmd_rx: &mut tokio_mpsc::UnboundedReceiver<NetCommand>,
+    emit: &impl Fn(NetEvent) -> bool,
+) -> SessionEnd {
     let (mut reader, mut writer) = conn.into_split();
 
     // Kick off discovery at the root.
     if let Err(e) = writer.get_directory(&[]).await {
-        emit!(NetEvent::Error(e.to_string()));
+        emit(NetEvent::Error(e.to_string()));
     }
 
     loop {
         tokio::select! {
-            cmd = cmd_rx.recv() => match cmd {
-                Some(NetCommand::GetDirectory(path)) => {
-                    if let Err(e) = writer.get_directory(&path).await {
-                        emit!(NetEvent::Error(e.to_string()));
-                    }
+            cmd = cmd_rx.recv() => {
+                let result = match cmd {
+                    Some(NetCommand::GetDirectory(path)) => writer.get_directory(&path).await,
+                    Some(NetCommand::SetValue(path, value)) => writer.set_value(&path, value).await,
+                    Some(NetCommand::Subscribe(path)) => writer.subscribe(&path).await,
+                    Some(NetCommand::Unsubscribe(path)) => writer.unsubscribe(&path).await,
+                    Some(NetCommand::Disconnect) | None => return SessionEnd::UserDisconnect,
+                };
+                if let Err(e) = result {
+                    // A write failure means the link is gone — drop and reconnect.
+                    return SessionEnd::Dropped(e.to_string());
                 }
-                Some(NetCommand::SetValue(path, value)) => {
-                    if let Err(e) = writer.set_value(&path, value).await {
-                        emit!(NetEvent::Error(e.to_string()));
-                    }
-                }
-                Some(NetCommand::Subscribe(path)) => {
-                    if let Err(e) = writer.subscribe(&path).await {
-                        emit!(NetEvent::Error(e.to_string()));
-                    }
-                }
-                Some(NetCommand::Unsubscribe(path)) => {
-                    if let Err(e) = writer.unsubscribe(&path).await {
-                        emit!(NetEvent::Error(e.to_string()));
-                    }
-                }
-                Some(NetCommand::Disconnect) | None => {
-                    emit!(NetEvent::Disconnected(None));
-                    return;
-                }
-            },
+            }
             inbound = reader.recv() => match inbound {
-                Ok(Some(Inbound::Root(root))) => emit!(NetEvent::Document(root)),
+                Ok(Some(Inbound::Root(root))) => { emit(NetEvent::Document(root)); }
                 Ok(Some(Inbound::KeepAliveRequest)) => {
                     let _ = writer.keepalive_response().await;
                 }
-                Ok(None) => {
-                    emit!(NetEvent::Disconnected(None));
-                    return;
-                }
-                Err(e) => {
-                    emit!(NetEvent::Disconnected(Some(e.to_string())));
-                    return;
-                }
+                Ok(None) => return SessionEnd::Dropped("connection closed by provider".into()),
+                Err(e) => return SessionEnd::Dropped(e.to_string()),
             },
         }
     }

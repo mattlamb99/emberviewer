@@ -1,4 +1,9 @@
 //! The eframe application: address-book sidebar + provider tree browser.
+//!
+//! egui 0.34 deprecated the `SidePanel`/`TopBottomPanel` aliases in favour of a
+//! unified `Panel` API; the aliases still work, so we keep them for now and
+//! migrate when that API settles.
+#![allow(deprecated)]
 
 use std::collections::{HashMap, HashSet};
 
@@ -21,12 +26,15 @@ struct Session {
     edits: HashMap<Vec<u32>, String>,
     /// Parameters we currently hold a value-change subscription for.
     subscribed: HashSet<Vec<u32>>,
+    /// Tree filter text (matches identifiers; empty = show all).
+    filter: String,
 }
 
 #[derive(Clone, PartialEq)]
 enum Status {
     Connecting,
     Connected,
+    Reconnecting { secs: u64, reason: String },
     Disconnected(String),
 }
 
@@ -69,6 +77,25 @@ impl App {
         }
     }
 
+    /// Switch to an already-open session, or connect if not yet open.
+    fn open_provider(&mut self, id: Id, ctx: &egui::Context) {
+        if self.sessions.contains_key(&id) {
+            self.active = Some(id);
+        } else {
+            self.connect(id, ctx);
+        }
+    }
+
+    /// Close a session: ask the task to stop and drop its state.
+    fn disconnect(&mut self, id: Id) {
+        if let Some(session) = self.sessions.remove(&id) {
+            session.handle.send(NetCommand::Disconnect);
+        }
+        if self.active == Some(id) {
+            self.active = self.sessions.keys().copied().next();
+        }
+    }
+
     fn connect(&mut self, id: Id, ctx: &egui::Context) {
         let Some(provider) = self.book.find_provider(id).cloned() else {
             return;
@@ -86,6 +113,7 @@ impl App {
                 open: HashMap::new(),
                 edits: HashMap::new(),
                 subscribed: HashSet::new(),
+                filter: String::new(),
             },
         );
         self.active = Some(id);
@@ -96,8 +124,25 @@ impl App {
         for session in self.sessions.values_mut() {
             for event in session.handle.drain() {
                 match event {
-                    NetEvent::Connected => session.status = Status::Connected,
+                    NetEvent::Connected => {
+                        session.status = Status::Connected;
+                        // (Re)establish: refetch every expanded node and
+                        // re-subscribe visible params on the new connection.
+                        for e in session.tree.entries.values_mut() {
+                            e.requested = false;
+                        }
+                        session.subscribed.clear();
+                    }
                     NetEvent::Document(root) => session.tree.merge(root),
+                    NetEvent::Reconnecting {
+                        retry_in_secs,
+                        reason,
+                    } => {
+                        session.status = Status::Reconnecting {
+                            secs: retry_in_secs,
+                            reason,
+                        };
+                    }
                     NetEvent::Disconnected(reason) => {
                         session.status =
                             Status::Disconnected(reason.unwrap_or_else(|| "closed".into()));
@@ -116,6 +161,7 @@ impl eframe::App for App {
 
         self.sidebar(ui, &ctx);
         self.add_dialog(&ctx);
+        self.tabs(ui);
 
         egui::TopBottomPanel::bottom("status").show_inside(ui, |ui| {
             ui.horizontal(|ui| {
@@ -126,6 +172,10 @@ impl eframe::App for App {
                             Status::Connected => {
                                 (format!("connected · {}", s.addr), egui::Color32::GREEN)
                             }
+                            Status::Reconnecting { secs, reason } => (
+                                format!("reconnecting in {secs}s · {reason}"),
+                                egui::Color32::from_rgb(230, 160, 30),
+                            ),
                             Status::Disconnected(r) => {
                                 (format!("disconnected · {r}"), egui::Color32::LIGHT_RED)
                             }
@@ -179,7 +229,7 @@ impl App {
                         );
                     }
                     if let Some(id) = to_connect {
-                        self.connect(id, ctx);
+                        self.open_provider(id, ctx);
                     }
                 });
             });
@@ -273,6 +323,49 @@ impl App {
         }
     }
 
+    /// One tab per open connection, with status dot and a close button.
+    fn tabs(&mut self, ui: &mut egui::Ui) {
+        if self.sessions.is_empty() {
+            return;
+        }
+        // Stable, deterministic tab order.
+        let mut ids: Vec<Id> = self.sessions.keys().copied().collect();
+        ids.sort_unstable();
+
+        let mut activate = None;
+        let mut disconnect = None;
+        egui::TopBottomPanel::top("tabs").show_inside(ui, |ui| {
+            ui.horizontal(|ui| {
+                for id in &ids {
+                    let session = &self.sessions[id];
+                    let dot = match session.status {
+                        Status::Connected => "🟢",
+                        Status::Connecting => "🟡",
+                        Status::Reconnecting { .. } => "🟠",
+                        Status::Disconnected(_) => "🔴",
+                    };
+                    let selected = self.active == Some(*id);
+                    if ui
+                        .selectable_label(selected, format!("{dot} {}", session.name))
+                        .clicked()
+                    {
+                        activate = Some(*id);
+                    }
+                    if ui.small_button("✖").on_hover_text("Disconnect").clicked() {
+                        disconnect = Some(*id);
+                    }
+                    ui.separator();
+                }
+            });
+        });
+        if let Some(id) = activate {
+            self.active = Some(id);
+        }
+        if let Some(id) = disconnect {
+            self.disconnect(id);
+        }
+    }
+
     fn tree_panel(&mut self, ui: &mut egui::Ui) {
         let Some(id) = self.active else {
             ui.centered_and_justified(|ui| {
@@ -291,8 +384,25 @@ impl App {
                     .weak()
                     .small(),
             );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if !session.filter.is_empty() && ui.button("✖").clicked() {
+                    session.filter.clear();
+                }
+                ui.add(
+                    egui::TextEdit::singleline(&mut session.filter)
+                        .hint_text("🔍 filter")
+                        .desired_width(160.0),
+                );
+            });
         });
         ui.separator();
+
+        // Build the allowed-path set when filtering (loaded entries only).
+        let filter_set = if session.filter.trim().is_empty() {
+            None
+        } else {
+            Some(compute_filter_set(&session.tree, session.filter.trim()))
+        };
 
         // Collect commands to send, and the set of parameters currently on
         // screen (so we can manage subscriptions), after the render borrow ends.
@@ -302,8 +412,17 @@ impl App {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                for root in &roots {
-                    render_entry(ui, session, root, &mut commands, &mut visible);
+                if let Some(allowed) = &filter_set {
+                    if allowed.is_empty() {
+                        ui.weak("no matches in loaded tree");
+                    }
+                    for root in &roots {
+                        render_filtered(ui, session, root, allowed, &mut commands, &mut visible);
+                    }
+                } else {
+                    for root in &roots {
+                        render_entry(ui, session, root, &mut commands, &mut visible);
+                    }
                 }
             });
 
@@ -351,7 +470,8 @@ fn render_entry(
         let next_open = header.is_open();
         let resp = header
             .show_header(ui, |ui| {
-                ui.label(format!("📁 {}", entry.label()));
+                ui.label(format!("📁 {}", entry.label()))
+                    .context_menu(|ui| context_copy(ui, &entry.path, &entry.identifier));
             })
             .body(|ui| {
                 let children = entry.children.clone();
@@ -362,11 +482,11 @@ fn render_entry(
                     ui.weak("…");
                 }
             });
-        // Detect a freshly-opened node and lazily request its children once.
-        let opened_now = next_open && !is_open;
+        // Lazily request children whenever a node is open but not yet fetched.
+        // (`requested` is reset on reconnect, so this also drives re-discovery.)
         session.open.insert(path.to_vec(), next_open);
-        let _ = resp;
-        if opened_now && !entry.requested {
+        let _ = (resp, is_open);
+        if next_open && !entry.requested {
             if let Some(e) = session.tree.entries.get_mut(path) {
                 e.requested = true;
             }
@@ -386,9 +506,10 @@ fn render_parameter(
     entry: &crate::model::Entry,
     commands: &mut Vec<NetCommand>,
 ) {
-    ui.horizontal(|ui| {
+    let row = ui.horizontal(|ui| {
         ui.add_space(18.0);
-        ui.label(egui::RichText::new(entry.label()).strong());
+        ui.label(egui::RichText::new(entry.label()).strong())
+            .on_hover_text(format!("path {}", path_string(&entry.path)));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if entry.param_type == Some(glow::parameter_type::TRIGGER) {
                 if ui.button("Fire").clicked() {
@@ -403,6 +524,8 @@ fn render_parameter(
             }
         });
     });
+    row.response
+        .context_menu(|ui| context_copy(ui, &entry.path, &entry.identifier));
 }
 
 /// A type-appropriate inline editor for a writable parameter.
@@ -454,6 +577,84 @@ fn editor(
         Some(Value::Octets(_)) => {
             ui.weak("<octets>");
         }
+    }
+}
+
+/// Dotted path string, e.g. `0.1.2`.
+fn path_string(path: &[u32]) -> String {
+    path.iter()
+        .map(|n| n.to_string())
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+/// Right-click menu: copy the element's path or identifier to the clipboard.
+fn context_copy(ui: &mut egui::Ui, path: &[u32], identifier: &str) {
+    if ui.button("Copy path").clicked() {
+        ui.ctx().copy_text(path_string(path));
+        ui.close_menu();
+    }
+    if !identifier.is_empty() && ui.button("Copy identifier").clicked() {
+        ui.ctx().copy_text(identifier.to_string());
+        ui.close_menu();
+    }
+}
+
+/// Set of paths to show when filtering: every entry whose identifier matches the
+/// (case-insensitive) query, plus all of their ancestors and descendants, so
+/// matches keep their context and matched nodes reveal their subtree.
+fn compute_filter_set(tree: &TreeModel, query: &str) -> HashSet<Vec<u32>> {
+    let q = query.to_lowercase();
+    let matches: Vec<&Vec<u32>> = tree
+        .entries
+        .values()
+        .filter(|e| e.label().to_lowercase().contains(&q))
+        .map(|e| &e.path)
+        .collect();
+
+    let mut allowed = HashSet::new();
+    for m in &matches {
+        // Ancestors (every prefix) + the match itself.
+        for len in 1..=m.len() {
+            allowed.insert(m[..len].to_vec());
+        }
+    }
+    // Descendants of any match.
+    for entry in tree.entries.keys() {
+        if matches.iter().any(|m| entry.len() > m.len() && entry.starts_with(m)) {
+            allowed.insert(entry.clone());
+        }
+    }
+    allowed
+}
+
+/// Render a filtered tree: only `allowed` paths, always expanded. Records
+/// visible parameter paths so subscriptions still track what's on screen.
+fn render_filtered(
+    ui: &mut egui::Ui,
+    session: &mut Session,
+    path: &[u32],
+    allowed: &HashSet<Vec<u32>>,
+    commands: &mut Vec<NetCommand>,
+    visible: &mut Vec<Vec<u32>>,
+) {
+    if !allowed.contains(path) {
+        return;
+    }
+    let Some(entry) = session.tree.get(path).cloned() else {
+        return;
+    };
+    if entry.kind.is_expandable() {
+        ui.label(format!("📁 {}", entry.label()))
+            .context_menu(|ui| context_copy(ui, &entry.path, &entry.identifier));
+        ui.indent(("filt", path), |ui| {
+            for child in &entry.children {
+                render_filtered(ui, session, child, allowed, commands, visible);
+            }
+        });
+    } else {
+        visible.push(path.to_vec());
+        render_parameter(ui, session, &entry, commands);
     }
 }
 
