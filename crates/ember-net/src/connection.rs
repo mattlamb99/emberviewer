@@ -2,9 +2,10 @@
 
 use std::time::Duration;
 
-use ember_proto::glow::{self, Root};
+use ember_proto::glow::{self, Root, Value};
 use ember_proto::s101::{self, FrameDecoder, Incoming};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpStream, ToSocketAddrs};
 
 /// Default Ember+ TCP port.
@@ -111,5 +112,105 @@ impl Connection {
             Ok(res) => res,
             Err(_) => Ok(None),
         }
+    }
+
+    /// Split into independent read and write halves so a caller can `select!`
+    /// over reading and writing concurrently (as the GUI's connection actor does).
+    pub fn into_split(self) -> (ProviderReader, ProviderWriter) {
+        let (read, write) = self.stream.into_split();
+        (
+            ProviderReader {
+                read,
+                decoder: self.decoder,
+                read_buf: self.read_buf,
+            },
+            ProviderWriter { write },
+        )
+    }
+}
+
+/// Something received from the provider on the read half.
+#[derive(Debug)]
+pub enum Inbound {
+    /// A decoded Glow document.
+    Root(Root),
+    /// The provider asked us to keep the connection alive; reply via the writer.
+    KeepAliveRequest,
+}
+
+/// Read half of a split [`Connection`].
+pub struct ProviderReader {
+    read: OwnedReadHalf,
+    decoder: FrameDecoder,
+    read_buf: Vec<u8>,
+}
+
+impl ProviderReader {
+    /// Await the next inbound item. Returns `Ok(None)` when the peer closes.
+    pub async fn recv(&mut self) -> Result<Option<Inbound>, ConnError> {
+        loop {
+            let n = self.read.read(&mut self.read_buf).await?;
+            if n == 0 {
+                return Ok(None);
+            }
+            for item in self.decoder.push(&self.read_buf[..n]) {
+                match item {
+                    Ok(Incoming::EmberPayload(payload)) => {
+                        let root = glow::decode_root(&payload)
+                            .map_err(|e| ConnError::Decode(e.to_string()))?;
+                        return Ok(Some(Inbound::Root(root)));
+                    }
+                    Ok(Incoming::KeepAliveRequest) => {
+                        return Ok(Some(Inbound::KeepAliveRequest));
+                    }
+                    Ok(Incoming::KeepAliveResponse) | Ok(Incoming::ProviderState(_)) => {}
+                    Err(e) => tracing::warn!("dropping malformed S101 frame: {e}"),
+                }
+            }
+        }
+    }
+}
+
+/// Write half of a split [`Connection`].
+pub struct ProviderWriter {
+    write: OwnedWriteHalf,
+}
+
+impl ProviderWriter {
+    /// Send a Glow `Root` document.
+    pub async fn send(&mut self, root: &Root) -> Result<(), ConnError> {
+        let payload = glow::encode_root(root).map_err(|e| ConnError::Encode(e.to_string()))?;
+        let frames = s101::encode_ember(&payload);
+        self.write.write_all(&frames).await?;
+        self.write.flush().await?;
+        Ok(())
+    }
+
+    /// Request the directory of the node at `path` (empty = root).
+    pub async fn get_directory(&mut self, path: &[u32]) -> Result<(), ConnError> {
+        self.send(&Root::get_directory_at(path)).await
+    }
+
+    /// Set the parameter at `path` to `value`.
+    pub async fn set_value(&mut self, path: &[u32], value: Value) -> Result<(), ConnError> {
+        self.send(&Root::set_value_at(path, value)).await
+    }
+
+    /// Reply to a provider keep-alive request.
+    pub async fn keepalive_response(&mut self) -> Result<(), ConnError> {
+        self.write
+            .write_all(&s101::encode_keepalive_response())
+            .await?;
+        self.write.flush().await?;
+        Ok(())
+    }
+
+    /// Send a keep-alive request.
+    pub async fn keepalive_request(&mut self) -> Result<(), ConnError> {
+        self.write
+            .write_all(&s101::encode_keepalive_request())
+            .await?;
+        self.write.flush().await?;
+        Ok(())
     }
 }

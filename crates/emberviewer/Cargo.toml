@@ -11,7 +11,10 @@ ember-net = { path = "../ember-net" }
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 anyhow.workspace = true
 thiserror.workspace = true
 directories = "6"
+eframe = "0.34.3"
+egui = "0.34.3"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }

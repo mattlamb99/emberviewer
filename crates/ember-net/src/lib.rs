@@ -2,4 +2,6 @@
 
 pub mod connection;
 
-pub use connection::{ConnError, Connection, DEFAULT_PORT};
+pub use connection::{
+    ConnError, Connection, Inbound, ProviderReader, ProviderWriter, DEFAULT_PORT,
+};

@@ -702,6 +702,23 @@ impl Root {
         };
         Root::from_element(RootElement::QualifiedNode(qn))
     }
+
+    /// Build a request that sets the parameter at `path` to `value`.
+    ///
+    /// Per Ember+, a set is just the parameter sent back carrying only the new
+    /// `value`; the provider applies it and echoes the resulting value.
+    pub fn set_value_at(path: &[u32], value: Value) -> Self {
+        let contents = ParameterContents {
+            value_: Some(value),
+            ..Default::default()
+        };
+        let qp = QualifiedParameter {
+            path: RelativeOid::from_arcs(path),
+            contents: Some(contents),
+            children: None,
+        };
+        Root::from_element(RootElement::QualifiedParameter(qp))
+    }
 }
 
 /// Encode a `Root` document to BER bytes.
