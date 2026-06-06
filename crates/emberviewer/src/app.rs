@@ -31,6 +31,12 @@ struct Session {
     filter: String,
     /// Pending boolean "pulse" resets: path -> when to send `false`.
     pulses: HashMap<Vec<u32>, std::time::Instant>,
+    /// Function argument input buffers: (function path, arg index) -> text.
+    func_inputs: HashMap<(Vec<u32>, usize), String>,
+    /// Last invocation id issued per function path (to look up its result).
+    invocations: HashMap<Vec<u32>, i32>,
+    /// Monotonic invocation id source.
+    next_invocation_id: i32,
 }
 
 #[derive(Clone, PartialEq)]
@@ -184,6 +190,9 @@ impl App {
                 subscribed: HashSet::new(),
                 filter: String::new(),
                 pulses: HashMap::new(),
+                func_inputs: HashMap::new(),
+                invocations: HashMap::new(),
+                next_invocation_id: 1,
             },
         );
         self.active = Some(id);
@@ -753,11 +762,17 @@ fn render_entry(
                     .context_menu(|ui| context_copy(ui, &entry.path, &entry.identifier));
             })
             .body(|ui| {
+                // Matrix grid / function form, when this node is one.
+                if let Some(m) = &entry.matrix {
+                    render_matrix(ui, &entry, m, commands);
+                } else if let Some(f) = &entry.function {
+                    render_function(ui, session, &entry, f, commands);
+                }
                 let children = sorted_paths(&session.tree, &entry.children, opts.order_by);
                 for child in &children {
                     render_entry(ui, session, child, opts, commands, visible);
                 }
-                if children.is_empty() {
+                if children.is_empty() && entry.matrix.is_none() && entry.function.is_none() {
                     ui.weak("…");
                 }
             });
@@ -983,6 +998,159 @@ fn render_filtered(
     } else {
         visible.push(path.to_vec());
         render_parameter(ui, session, &entry, opts, commands);
+    }
+}
+
+/// Render a matrix as a target×source crosspoint grid.
+fn render_matrix(
+    ui: &mut egui::Ui,
+    entry: &crate::model::Entry,
+    m: &crate::model::MatrixInfo,
+    commands: &mut Vec<NetCommand>,
+) {
+    let path = entry.path.clone();
+    let kind = match m.mtype {
+        x if x == glow::matrix_type::ONE_TO_N => "1:N",
+        x if x == glow::matrix_type::ONE_TO_ONE => "1:1",
+        x if x == glow::matrix_type::N_TO_N => "N:N",
+        _ => "?",
+    };
+    ui.label(format!(
+        "Matrix {}×{} ({kind}) — rows = targets, cols = sources",
+        m.target_count, m.source_count
+    ));
+    egui::ScrollArea::horizontal()
+        .id_salt(("mscroll", &path))
+        .show(ui, |ui| {
+            egui::Grid::new(("matrix", &path))
+                .striped(true)
+                .spacing(egui::vec2(2.0, 2.0))
+                .show(ui, |ui| {
+                    ui.label("");
+                    for s in 0..m.source_count {
+                        ui.label(egui::RichText::new(s.to_string()).small());
+                    }
+                    ui.end_row();
+                    for t in 0..m.target_count {
+                        ui.label(egui::RichText::new(t.to_string()).small());
+                        let connected = m.connections.get(&t);
+                        for s in 0..m.source_count {
+                            let on = connected.is_some_and(|set| set.contains(&s));
+                            if ui
+                                .add(egui::SelectableLabel::new(on, "   "))
+                                .on_hover_text(format!("target {t} ← source {s}"))
+                                .clicked()
+                            {
+                                let operation = if on {
+                                    glow::connection_operation::DISCONNECT
+                                } else {
+                                    glow::connection_operation::CONNECT
+                                };
+                                commands.push(NetCommand::MatrixConnect {
+                                    path: path.clone(),
+                                    target: t,
+                                    sources: vec![s],
+                                    operation,
+                                });
+                            }
+                        }
+                        ui.end_row();
+                    }
+                });
+        });
+}
+
+/// Render a function's argument form, an Invoke button, and the last result.
+fn render_function(
+    ui: &mut egui::Ui,
+    session: &mut Session,
+    entry: &crate::model::Entry,
+    f: &crate::model::FunctionInfo,
+    commands: &mut Vec<NetCommand>,
+) {
+    let path = entry.path.clone();
+    if f.args.is_empty() {
+        ui.weak("no arguments");
+    }
+    for (i, arg) in f.args.iter().enumerate() {
+        ui.horizontal(|ui| {
+            ui.label(format!("{} ({})", arg.name, ptype_name(arg.ptype)));
+            let buf = session.func_inputs.entry((path.clone(), i)).or_default();
+            ui.add(egui::TextEdit::singleline(buf).desired_width(120.0));
+        });
+    }
+    ui.horizontal(|ui| {
+        if ui.button("Invoke").clicked() {
+            let args: Vec<Value> = f
+                .args
+                .iter()
+                .enumerate()
+                .map(|(i, arg)| {
+                    let s = session
+                        .func_inputs
+                        .get(&(path.clone(), i))
+                        .cloned()
+                        .unwrap_or_default();
+                    parse_value(&s, arg.ptype)
+                })
+                .collect();
+            let id = session.next_invocation_id;
+            session.next_invocation_id += 1;
+            session.invocations.insert(path.clone(), id);
+            commands.push(NetCommand::Invoke {
+                path: path.clone(),
+                invocation_id: id,
+                args,
+            });
+        }
+    });
+    if let Some(id) = session.invocations.get(&path) {
+        if let Some(outcome) = session.tree.invocation_results.get(id) {
+            let names: Vec<String> = if f.result.len() == outcome.values.len() {
+                f.result
+                    .iter()
+                    .zip(&outcome.values)
+                    .map(|(slot, v)| format!("{}={}", slot.name, format_value(v)))
+                    .collect()
+            } else {
+                outcome.values.iter().map(format_value).collect()
+            };
+            let status = if outcome.success { "✓" } else { "FAILED" };
+            ui.colored_label(
+                if outcome.success {
+                    egui::Color32::from_rgb(40, 160, 80)
+                } else {
+                    egui::Color32::from_rgb(200, 60, 60)
+                },
+                format!("Result {status}: {}", names.join(", ")),
+            );
+        }
+    }
+}
+
+fn ptype_name(ptype: i32) -> &'static str {
+    use glow::parameter_type as pt;
+    match ptype {
+        x if x == pt::INTEGER => "int",
+        x if x == pt::REAL => "real",
+        x if x == pt::STRING => "string",
+        x if x == pt::BOOLEAN => "bool",
+        x if x == pt::ENUM => "enum",
+        x if x == pt::OCTETS => "octets",
+        _ => "?",
+    }
+}
+
+fn parse_value(s: &str, ptype: i32) -> Value {
+    use glow::parameter_type as pt;
+    let t = s.trim();
+    match ptype {
+        x if x == pt::INTEGER || x == pt::ENUM => Value::Integer(t.parse().unwrap_or(0)),
+        x if x == pt::REAL => Value::Real(t.parse::<f64>().unwrap_or(0.0).into()),
+        x if x == pt::BOOLEAN => {
+            Value::Boolean(matches!(t.to_lowercase().as_str(), "true" | "1" | "yes" | "on"))
+        }
+        _ => Value::String(s.to_string()),
     }
 }
 

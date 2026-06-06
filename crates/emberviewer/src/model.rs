@@ -4,7 +4,7 @@
 //! are merged in: each element upserts an entry and links it under its parent.
 //! Parameters and matrices/functions are leaves (for now); nodes are expandable.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use ember_proto::glow::{self, Element, Root, RootElement, Value};
 
@@ -22,6 +22,37 @@ impl Kind {
     pub fn is_expandable(self) -> bool {
         matches!(self, Kind::Node | Kind::Matrix | Kind::Function)
     }
+}
+
+/// A function argument or result slot.
+#[derive(Debug, Clone)]
+pub struct TupleItem {
+    pub name: String,
+    pub ptype: i32,
+}
+
+/// Matrix detail, attached to a matrix entry.
+#[derive(Debug, Clone, Default)]
+pub struct MatrixInfo {
+    pub mtype: i32,
+    pub target_count: u32,
+    pub source_count: u32,
+    /// target number -> connected source numbers.
+    pub connections: BTreeMap<u32, BTreeSet<u32>>,
+}
+
+/// Function detail, attached to a function entry.
+#[derive(Debug, Clone, Default)]
+pub struct FunctionInfo {
+    pub args: Vec<TupleItem>,
+    pub result: Vec<TupleItem>,
+}
+
+/// The outcome of a function invocation.
+#[derive(Debug, Clone)]
+pub struct InvocationOutcome {
+    pub success: bool,
+    pub values: Vec<Value>,
 }
 
 /// One node or parameter in the provider tree.
@@ -42,6 +73,10 @@ pub struct Entry {
     pub children: Vec<Vec<u32>>,
     /// Whether we have already issued `getDirectory` for this node's children.
     pub requested: bool,
+    /// Matrix detail (for `Kind::Matrix`).
+    pub matrix: Option<MatrixInfo>,
+    /// Function detail (for `Kind::Function`).
+    pub function: Option<FunctionInfo>,
 }
 
 impl Entry {
@@ -59,6 +94,8 @@ impl Entry {
             maximum: None,
             children: Vec::new(),
             requested: false,
+            matrix: None,
+            function: None,
         }
     }
 
@@ -83,6 +120,8 @@ pub struct TreeModel {
     pub entries: HashMap<Vec<u32>, Entry>,
     /// Top-level paths, in discovery order.
     pub roots: Vec<Vec<u32>>,
+    /// Most recent function results, keyed by invocation id.
+    pub invocation_results: HashMap<i32, InvocationOutcome>,
 }
 
 impl TreeModel {
@@ -96,12 +135,29 @@ impl TreeModel {
 
     /// Merge a decoded `Root` document into the tree.
     pub fn merge(&mut self, root: Root) {
-        if let Root::Elements(coll) = root {
-            for entry in coll.0 {
-                self.ingest_root_element(entry.0);
+        match root {
+            Root::Elements(coll) => {
+                for entry in coll.0 {
+                    self.ingest_root_element(entry.0);
+                }
             }
+            Root::InvocationResult(ir) => {
+                if let Some(id) = ir.invocation_id {
+                    let values = ir
+                        .result
+                        .map(|t| t.0.into_iter().map(|tv| tv.0).collect())
+                        .unwrap_or_default();
+                    self.invocation_results.insert(
+                        id,
+                        InvocationOutcome {
+                            success: ir.success.unwrap_or(true),
+                            values,
+                        },
+                    );
+                }
+            }
+            Root::Streams(_) => {} // Phase 5
         }
-        // Stream/InvocationResult handled in later phases.
     }
 
     fn ingest_root_element(&mut self, re: RootElement) {
@@ -113,11 +169,15 @@ impl TreeModel {
                 self.ingest_parameter(qp.path.arcs(), qp.contents)
             }
             RootElement::Element(e) => self.ingest_element(&[], e),
-            RootElement::QualifiedMatrix(qm) => {
-                self.upsert(qm.path.arcs(), Kind::Matrix);
-            }
+            RootElement::QualifiedMatrix(qm) => self.ingest_matrix(
+                qm.path.arcs(),
+                qm.contents,
+                qm.targets,
+                qm.sources,
+                qm.connections,
+            ),
             RootElement::QualifiedFunction(qf) => {
-                self.upsert(qf.path.arcs(), Kind::Function);
+                self.ingest_function(qf.path.arcs(), qf.contents)
             }
         }
     }
@@ -138,12 +198,12 @@ impl TreeModel {
             Element::Matrix(m) => {
                 let mut path = parent.to_vec();
                 path.push(m.number as u32);
-                self.upsert(path, Kind::Matrix);
+                self.ingest_matrix(path, m.contents, m.targets, m.sources, m.connections);
             }
             Element::Function(f) => {
                 let mut path = parent.to_vec();
                 path.push(f.number as u32);
-                self.upsert(path, Kind::Function);
+                self.ingest_function(path, f.contents);
             }
             Element::Command(_) => {} // requests only
         }
@@ -200,6 +260,90 @@ impl TreeModel {
             if let Some(en) = c.enumeration {
                 e.enumeration = Some(en.split('\n').map(|s| s.to_string()).collect());
             }
+        }
+    }
+
+    fn ingest_matrix(
+        &mut self,
+        path: Vec<u32>,
+        contents: Option<glow::MatrixContents>,
+        _targets: Option<glow::TargetCollection>,
+        _sources: Option<glow::SourceCollection>,
+        connections: Option<glow::ConnectionCollection>,
+    ) {
+        self.upsert(path.clone(), Kind::Matrix);
+        // Identifier/description on the entry itself.
+        if let Some(c) = &contents {
+            let e = self.entries.get_mut(&path).unwrap();
+            if let Some(id) = &c.identifier {
+                e.identifier = id.clone();
+            }
+            if c.description.is_some() {
+                e.description = c.description.clone();
+            }
+        }
+        let e = self.entries.get_mut(&path).unwrap();
+        let info = e.matrix.get_or_insert_with(MatrixInfo::default);
+        if let Some(c) = &contents {
+            if let Some(t) = c.r#type {
+                info.mtype = t;
+            }
+            if let Some(tc) = c.target_count {
+                info.target_count = tc.max(0) as u32;
+            }
+            if let Some(sc) = c.source_count {
+                info.source_count = sc.max(0) as u32;
+            }
+        }
+        if let Some(conns) = connections {
+            for entry in conns.0 {
+                let conn = entry.0;
+                let target = conn.target.max(0) as u32;
+                let srcs: BTreeSet<u32> = conn
+                    .sources
+                    .as_ref()
+                    .map(|r| r.arcs())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .collect();
+                let op = conn.operation.unwrap_or(glow::connection_operation::ABSOLUTE);
+                let set = info.connections.entry(target).or_default();
+                match op {
+                    glow::connection_operation::CONNECT => set.extend(srcs),
+                    glow::connection_operation::DISCONNECT => {
+                        for s in &srcs {
+                            set.remove(s);
+                        }
+                    }
+                    _ => *set = srcs, // absolute / tally: replace
+                }
+            }
+        }
+    }
+
+    fn ingest_function(&mut self, path: Vec<u32>, contents: Option<glow::FunctionContents>) {
+        self.upsert(path.clone(), Kind::Function);
+        if let Some(c) = contents {
+            let e = self.entries.get_mut(&path).unwrap();
+            if let Some(id) = c.identifier {
+                e.identifier = id;
+            }
+            if c.description.is_some() {
+                e.description = c.description;
+            }
+            let map_items = |td: glow::TupleDescription| -> Vec<TupleItem> {
+                td.0
+                    .into_iter()
+                    .map(|item| TupleItem {
+                        name: item.0.name.unwrap_or_default(),
+                        ptype: item.0.r#type,
+                    })
+                    .collect()
+            };
+            e.function = Some(FunctionInfo {
+                args: c.arguments.map(map_items).unwrap_or_default(),
+                result: c.result.map(map_items).unwrap_or_default(),
+            });
         }
     }
 

@@ -232,6 +232,28 @@ impl ProviderWriter {
         self.send(&Root::unsubscribe_at(path)).await
     }
 
+    /// Change a matrix crosspoint.
+    pub async fn matrix_connect(
+        &mut self,
+        path: &[u32],
+        target: u32,
+        sources: &[u32],
+        operation: i32,
+    ) -> Result<(), ConnError> {
+        self.send(&Root::matrix_connect(path, target, sources, operation))
+            .await
+    }
+
+    /// Invoke a function with arguments.
+    pub async fn invoke(
+        &mut self,
+        path: &[u32],
+        invocation_id: i32,
+        args: Vec<Value>,
+    ) -> Result<(), ConnError> {
+        self.send(&Root::invoke(path, invocation_id, args)).await
+    }
+
     /// Reply to a provider keep-alive request.
     pub async fn keepalive_response(&mut self) -> Result<(), ConnError> {
         self.write

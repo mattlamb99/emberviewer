@@ -932,6 +932,44 @@ impl Root {
         };
         Root::from_element(RootElement::QualifiedParameter(qp))
     }
+
+    /// Build a matrix crosspoint change for `target` ← `sources` with `operation`
+    /// (see [`connection_operation`]).
+    pub fn matrix_connect(path: &[u32], target: u32, sources: &[u32], operation: Integer32) -> Self {
+        let connection = Connection {
+            target: target as Integer32,
+            sources: Some(RelativeOid::from_arcs(sources)),
+            operation: Some(operation),
+            disposition: None,
+        };
+        let qm = QualifiedMatrix {
+            path: RelativeOid::from_arcs(path),
+            contents: None,
+            children: None,
+            targets: None,
+            sources: None,
+            connections: Some(ConnectionCollection(vec![ConnectionEntry(connection)])),
+        };
+        Root::from_element(RootElement::QualifiedMatrix(qm))
+    }
+
+    /// Build a function invocation request.
+    pub fn invoke(path: &[u32], invocation_id: Integer32, args: Vec<Value>) -> Self {
+        let invocation = Invocation {
+            invocation_id: Some(invocation_id),
+            arguments: Some(ValueTuple(args.into_iter().map(TupleValue).collect())),
+        };
+        let command = Command {
+            number: command_type::INVOKE,
+            options: Some(CommandOptions::Invocation(invocation)),
+        };
+        let qf = QualifiedFunction {
+            path: RelativeOid::from_arcs(path),
+            contents: None,
+            children: Some(ElementCollection(vec![ElementEntry(Element::Command(command))])),
+        };
+        Root::from_element(RootElement::QualifiedFunction(qf))
+    }
 }
 
 /// Encode a `Root` document to BER bytes.

@@ -21,6 +21,19 @@ pub enum NetCommand {
     Subscribe(Vec<u32>),
     /// Unsubscribe from value changes of the parameter at this path.
     Unsubscribe(Vec<u32>),
+    /// Change a matrix crosspoint: matrix path, target, sources, operation.
+    MatrixConnect {
+        path: Vec<u32>,
+        target: u32,
+        sources: Vec<u32>,
+        operation: i32,
+    },
+    /// Invoke a function: path, invocation id, arguments.
+    Invoke {
+        path: Vec<u32>,
+        invocation_id: i32,
+        args: Vec<Value>,
+    },
     /// Close the connection.
     Disconnect,
 }
@@ -171,6 +184,12 @@ async fn run_session(
                     Some(NetCommand::SetValue(path, value)) => writer.set_value(&path, value).await,
                     Some(NetCommand::Subscribe(path)) => writer.subscribe(&path).await,
                     Some(NetCommand::Unsubscribe(path)) => writer.unsubscribe(&path).await,
+                    Some(NetCommand::MatrixConnect { path, target, sources, operation }) => {
+                        writer.matrix_connect(&path, target, &sources, operation).await
+                    }
+                    Some(NetCommand::Invoke { path, invocation_id, args }) => {
+                        writer.invoke(&path, invocation_id, args).await
+                    }
                     Some(NetCommand::Disconnect) | None => return SessionEnd::UserDisconnect,
                 };
                 if let Err(e) = result {
