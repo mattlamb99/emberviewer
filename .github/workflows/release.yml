@@ -64,7 +64,11 @@ jobs:
         include:
           - os: ubuntu-latest
             target_os: linux
+          # macos-latest is Apple Silicon (arm64); macos-13 is the Intel (x86_64)
+          # runner — a native build on each, named by `uname -m`.
           - os: macos-latest
+            target_os: macos
+          - os: macos-13
             target_os: macos
           - os: windows-latest
             target_os: windows
