@@ -11,6 +11,18 @@ const HOST = '0.0.0.0';
 //const HOST = '127.0.0.1';
 const PORT = 9000;
 
+// Build a oneToN matrix with a connection entry pre-created for EVERY target
+// (node-emberplus's connect handler dereferences matrix.connections[target]
+// before creating it, so undefined targets crash it and reject routes).
+// `initial` maps target index -> array of initial source indices.
+function makeMatrix(identifier, targetCount, sourceCount, initial = {}) {
+    const connections = {};
+    for (let t = 0; t < targetCount; t++) {
+        connections[t] = { target: t, sources: initial[t] || [] };
+    }
+    return { identifier, type: 'oneToN', mode: 'linear', targetCount, sourceCount, connections };
+}
+
 // Sample tree:
 // 0                       "EmberViewer Test Provider" (root node)
 // 0.0                     "identity"        (node)
@@ -78,29 +90,13 @@ const jsonTree = [
                 ],
             },
             {
-                // path "0.2"  -- a real one-to-N routing matrix (4 targets x 4 sources).
-                // Presence of `targetCount` triggers the matrix branch in the JSON parser.
-                identifier: 'matrix',
-                type: 'oneToN',
-                mode: 'linear',
-                targetCount: 4,
-                sourceCount: 4,
-                // Initial crosspoints: target 0 <- source 0, target 1 <- source 2.
-                // All targets listed (even empty) so node-emberplus pre-creates a
-                // MatrixConnection per target — its connect handler dereferences
-                // matrix.connections[target] before creating it, so undefined targets
-                // crash the handler and silently reject routes.
-                connections: {
-                    0: { target: 0, sources: [0] },
-                    1: { target: 1, sources: [2] },
-                    2: { target: 2, sources: [] },
-                    3: { target: 3, sources: [] },
-                },
-                // NOTE: a `labels` descriptor (basePath -> child label node) is
-                // intentionally omitted: node-emberplus's server fails to encode a
-                // matrix getDirectory response when labels + matrix children are both
-                // present (the request times out). The matrix still exposes its
-                // targets, sources and connections, which are the important parts here.
+                // path "0.2"  -- a node holding two large routing matrices
+                // (40 targets x 70 sources each) for testing bigger grids.
+                identifier: 'matrices',
+                children: [
+                    makeMatrix('routerA', 40, 70, { 0: [0], 1: [2], 5: [10], 39: [69] }),
+                    makeMatrix('routerB', 40, 70, { 3: [7], 20: [35] }),
+                ],
             },
             {
                 // path "0.3"  -- a node containing a real, invocable Function

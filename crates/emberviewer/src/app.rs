@@ -37,6 +37,18 @@ struct Session {
     invocations: HashMap<Vec<u32>, i32>,
     /// Monotonic invocation id source.
     next_invocation_id: i32,
+    /// Parameter paths whose value changes are being logged.
+    logged: HashSet<Vec<u32>>,
+}
+
+/// One line in the change log.
+#[derive(Clone)]
+struct LogEntry {
+    time: String,
+    provider: String,
+    label: String,
+    path: String,
+    value: String,
 }
 
 #[derive(Clone, PartialEq)]
@@ -107,6 +119,9 @@ pub struct App {
     provider_filter: String,
     settings: Settings,
     show_options: bool,
+    /// Change-log buffer (newest last).
+    log: Vec<LogEntry>,
+    show_log: bool,
 }
 
 impl App {
@@ -129,6 +144,8 @@ impl App {
             provider_filter: String::new(),
             settings,
             show_options: false,
+            log: Vec::new(),
+            show_log: false,
         };
         app.apply_startup_mode(&cc.egui_ctx.clone());
         app
@@ -213,6 +230,7 @@ impl App {
                 func_inputs: HashMap::new(),
                 invocations: HashMap::new(),
                 next_invocation_id: 1,
+                logged: HashSet::new(),
             },
         );
         self.active = Some(id);
@@ -222,7 +240,9 @@ impl App {
     /// Drain network events for every session and apply them to the model.
     fn pump_network(&mut self) {
         let clear_on_disconnect = self.settings.clear_tree_on_disconnect;
+        let mut new_logs: Vec<LogEntry> = Vec::new();
         for session in self.sessions.values_mut() {
+            let provider = session.name.clone();
             for event in session.handle.drain() {
                 match event {
                     NetEvent::Connected => {
@@ -234,7 +254,28 @@ impl App {
                         }
                         session.subscribed.clear();
                     }
-                    NetEvent::Document(root) => session.tree.merge(root),
+                    NetEvent::Document(root) => {
+                        // Snapshot logged params' values, merge, then log changes.
+                        let snaps: Vec<(Vec<u32>, Option<Value>)> = session
+                            .logged
+                            .iter()
+                            .map(|p| (p.clone(), session.tree.get(p).and_then(|e| e.value.clone())))
+                            .collect();
+                        session.tree.merge(root);
+                        for (p, old) in snaps {
+                            if let Some(e) = session.tree.get(&p) {
+                                if e.value.is_some() && e.value != old {
+                                    new_logs.push(LogEntry {
+                                        time: timestamp(),
+                                        provider: provider.clone(),
+                                        label: e.label(),
+                                        path: path_string(&p),
+                                        value: e.value.as_ref().map(format_value).unwrap_or_default(),
+                                    });
+                                }
+                            }
+                        }
+                    }
                     NetEvent::Reconnecting {
                         retry_in_secs,
                         reason,
@@ -256,7 +297,39 @@ impl App {
                 }
             }
         }
+        for entry in new_logs {
+            self.push_log(entry);
+        }
     }
+
+    /// Append a log entry to the buffer and (if configured) the log file.
+    fn push_log(&mut self, entry: LogEntry) {
+        let path = self.settings.log_file.trim();
+        if !path.is_empty() {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+                let _ = writeln!(
+                    f,
+                    "{} [{}] {} ({}) = {}",
+                    entry.time, entry.provider, entry.label, entry.path, entry.value
+                );
+            }
+        }
+        self.log.push(entry);
+        let len = self.log.len();
+        if len > 5000 {
+            self.log.drain(0..len - 5000);
+        }
+    }
+}
+
+/// Current wall-clock time as `HH:MM:SS` (UTC).
+fn timestamp() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("{:02}:{:02}:{:02}", (secs / 3600) % 24, (secs / 60) % 60, secs % 60)
 }
 
 impl eframe::App for App {
@@ -269,6 +342,13 @@ impl eframe::App for App {
             ui.horizontal(|ui| {
                 if ui.button("Options").clicked() {
                     self.show_options = true;
+                }
+                if ui
+                    .selectable_label(self.show_log, "Log")
+                    .on_hover_text("Show the change log")
+                    .clicked()
+                {
+                    self.show_log = !self.show_log;
                 }
             });
         });
@@ -300,6 +380,45 @@ impl eframe::App for App {
                 });
             });
         });
+
+        if self.show_log {
+            egui::TopBottomPanel::bottom("logpanel")
+                .resizable(true)
+                .default_height(160.0)
+                .show_inside(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.strong("Change log");
+                        let logging_to_file = !self.settings.log_file.trim().is_empty();
+                        if logging_to_file {
+                            ui.weak(format!("→ {}", self.settings.log_file.trim()));
+                        }
+                        ui.with_layout(
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                if ui.button("Clear").clicked() {
+                                    self.log.clear();
+                                }
+                                ui.weak(format!("{} entries", self.log.len()));
+                            },
+                        );
+                    });
+                    ui.separator();
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .stick_to_bottom(true)
+                        .show(ui, |ui| {
+                            for e in &self.log {
+                                ui.label(format!(
+                                    "{}  [{}]  {} ({}) = {}",
+                                    e.time, e.provider, e.label, e.path, e.value
+                                ));
+                            }
+                            if self.log.is_empty() {
+                                ui.weak("Right-click a parameter → \"Log changes\" to record its value changes here.");
+                            }
+                        });
+                });
+        }
 
         egui::CentralPanel::default().show_inside(ui, |ui| {
             self.tree_panel(ui);
@@ -975,8 +1094,13 @@ fn render_parameter(
     commands: &mut Vec<NetCommand>,
 ) {
     let label = param_label(entry, opts);
+    let logging = session.logged.contains(&entry.path);
     ui.horizontal(|ui| {
         ui.add_space(8.0);
+        // A red dot marks a parameter whose changes are being logged.
+        if logging {
+            paint_dot(ui, egui::Color32::from_rgb(210, 60, 60));
+        }
         // Read-only vs writable badge.
         let (badge, color) = if entry.is_writable() {
             ("rw", egui::Color32::from_rgb(70, 130, 200))
@@ -992,7 +1116,19 @@ fn render_parameter(
         // Attach the context menu to the (interactive) label, like node headers.
         ui.label(egui::RichText::new(label).strong())
             .on_hover_text(format!("path {}", path_string(&entry.path)))
-            .context_menu(|ui| context_copy(ui, &entry.path, &entry.identifier));
+            .context_menu(|ui| {
+                context_copy(ui, &entry.path, &entry.identifier);
+                ui.separator();
+                let label = if logging { "Stop logging" } else { "Log changes" };
+                if ui.button(label).clicked() {
+                    if logging {
+                        session.logged.remove(&entry.path);
+                    } else {
+                        session.logged.insert(entry.path.clone());
+                    }
+                    ui.close();
+                }
+            });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if entry.param_type == Some(glow::parameter_type::TRIGGER) {
                 if ui.button("Fire").clicked() {
@@ -1215,84 +1351,100 @@ fn render_matrix(
         _ => "?",
     };
     ui.label(format!("Matrix {}×{} ({kind})", m.target_count, m.source_count));
-
-    // The connection state and the click action are axis-independent.
-    let mut cell = |ui: &mut egui::Ui, t: u32, s: u32| {
-        let on = m.connections.get(&t).is_some_and(|set| set.contains(&s));
-        if ui
-            .add(egui::SelectableLabel::new(on, "   "))
-            .on_hover_text(format!("target {t} ← source {s}"))
-            .clicked()
-        {
-            let operation = if on {
-                glow::connection_operation::DISCONNECT
-            } else if m.mtype == glow::matrix_type::N_TO_N {
-                glow::connection_operation::CONNECT // N:N adds a source
-            } else {
-                glow::connection_operation::ABSOLUTE // 1:N / 1:1 replace the source
-            };
-            commands.push(NetCommand::MatrixConnect {
-                path: path.clone(),
-                target: t,
-                sources: vec![s],
-                operation,
-            });
-        }
-    };
-
     let (col_letter, row_letter) = if opts.matrix_targets_on_top {
-        ("T", "S")
+        ("targets", "sources")
     } else {
-        ("S", "T")
+        ("sources", "targets")
     };
     ui.label(
-        egui::RichText::new(format!(
-            "columns (top) = {}, rows (left) = {}",
-            if opts.matrix_targets_on_top { "targets" } else { "sources" },
-            if opts.matrix_targets_on_top { "sources" } else { "targets" },
-        ))
-        .small()
-        .weak(),
+        egui::RichText::new(format!("columns (top) = {col_letter}, rows (left) = {row_letter}"))
+            .small()
+            .weak(),
     );
 
-    egui::ScrollArea::horizontal()
-        .id_salt(("mscroll", &path))
-        .show(ui, |ui| {
-            // Stronger alternating row shading than the default faint stripe.
-            ui.visuals_mut().faint_bg_color = if ui.visuals().dark_mode {
-                egui::Color32::from_gray(58)
+    let (cols, rows) = if opts.matrix_targets_on_top {
+        (m.target_count, m.source_count)
+    } else {
+        (m.source_count, m.target_count)
+    };
+    let dark = ui.visuals().dark_mode;
+    let (light_row, dark_row) = if dark {
+        (egui::Color32::from_gray(40), egui::Color32::from_gray(72))
+    } else {
+        (egui::Color32::from_gray(238), egui::Color32::from_gray(212))
+    };
+    let accent = ui.visuals().selection.bg_fill;
+
+    const CELL: f32 = 18.0;
+    // Fixed-size cells keep columns and rows the same pitch (an auto-sized grid
+    // makes columns as wide as the header text).
+    let draw_label = |ui: &mut egui::Ui, text: &str, strong: bool| {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(CELL, CELL), egui::Sense::hover());
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            text,
+            egui::FontId::proportional(9.0),
+            if strong {
+                ui.visuals().text_color()
             } else {
-                egui::Color32::from_gray(214)
-            };
-            egui::Grid::new(("matrix", &path))
-                .striped(true)
-                .spacing(egui::vec2(2.0, 2.0))
-                .show(ui, |ui| {
-                    let (cols, rows) = if opts.matrix_targets_on_top {
-                        (m.target_count, m.source_count)
-                    } else {
-                        (m.source_count, m.target_count)
-                    };
-                    // Header row: corner + column indices.
-                    ui.label(egui::RichText::new(format!("{row_letter}\\{col_letter}")).small().weak());
+                ui.visuals().weak_text_color()
+            },
+        );
+    };
+
+    egui::ScrollArea::both()
+        .id_salt(("mscroll", &path))
+        .max_height(420.0)
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(1.0, 1.0);
+            // Header row: corner + column indices.
+            ui.horizontal(|ui| {
+                draw_label(ui, "", false);
+                for c in 0..cols {
+                    draw_label(ui, &c.to_string(), false);
+                }
+            });
+            for r in 0..rows {
+                ui.horizontal(|ui| {
+                    draw_label(ui, &r.to_string(), true);
+                    let row_bg = if r % 2 == 0 { light_row } else { dark_row };
                     for c in 0..cols {
-                        ui.label(egui::RichText::new(format!("{col_letter}{c}")).small());
-                    }
-                    ui.end_row();
-                    for r in 0..rows {
-                        ui.label(egui::RichText::new(format!("{row_letter}{r}")).small());
-                        for c in 0..cols {
-                            // Map (row, col) back to (target, source).
-                            let (t, s) = if opts.matrix_targets_on_top {
-                                (c, r)
+                        let (t, s) = if opts.matrix_targets_on_top {
+                            (c, r)
+                        } else {
+                            (r, c)
+                        };
+                        let on = m.connections.get(&t).is_some_and(|set| set.contains(&s));
+                        let (rect, resp) =
+                            ui.allocate_exact_size(egui::vec2(CELL, CELL), egui::Sense::click());
+                        let fill = if on {
+                            accent
+                        } else if resp.hovered() {
+                            ui.visuals().widgets.hovered.bg_fill
+                        } else {
+                            row_bg
+                        };
+                        ui.painter().rect_filled(rect, 2.0, fill);
+                        let resp = resp.on_hover_text(format!("target {t} ← source {s}"));
+                        if resp.clicked() {
+                            let operation = if on {
+                                glow::connection_operation::DISCONNECT
+                            } else if m.mtype == glow::matrix_type::N_TO_N {
+                                glow::connection_operation::CONNECT
                             } else {
-                                (r, c)
+                                glow::connection_operation::ABSOLUTE
                             };
-                            cell(ui, t, s);
+                            commands.push(NetCommand::MatrixConnect {
+                                path: path.clone(),
+                                target: t,
+                                sources: vec![s],
+                                operation,
+                            });
                         }
-                        ui.end_row();
                     }
                 });
+            }
         });
 }
 
