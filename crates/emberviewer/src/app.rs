@@ -167,20 +167,16 @@ impl eframe::App for App {
             ui.horizontal(|ui| {
                 if let Some(id) = self.active {
                     if let Some(s) = self.sessions.get(&id) {
-                        let (txt, color) = match &s.status {
-                            Status::Connecting => ("connecting…".to_string(), egui::Color32::YELLOW),
-                            Status::Connected => {
-                                (format!("connected · {}", s.addr), egui::Color32::GREEN)
+                        let txt = match &s.status {
+                            Status::Connecting => "connecting…".to_string(),
+                            Status::Connected => format!("connected · {}", s.addr),
+                            Status::Reconnecting { secs, reason } => {
+                                format!("reconnecting in {secs}s · {reason}")
                             }
-                            Status::Reconnecting { secs, reason } => (
-                                format!("reconnecting in {secs}s · {reason}"),
-                                egui::Color32::from_rgb(230, 160, 30),
-                            ),
-                            Status::Disconnected(r) => {
-                                (format!("disconnected · {r}"), egui::Color32::LIGHT_RED)
-                            }
+                            Status::Disconnected(r) => format!("disconnected · {r}"),
                         };
-                        ui.colored_label(color, txt);
+                        ui.colored_label(status_color(Some(&s.status)), "●");
+                        ui.label(txt);
                     }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -254,14 +250,17 @@ impl App {
                     });
             }
             Node::Provider(p) => {
-                let connected = sessions.contains_key(&p.id);
-                let dot = if connected { "🟢" } else { "⚪" };
+                let status = sessions.get(&p.id).map(|s| &s.status);
                 let selected = active == Some(p.id);
-                let resp = ui.selectable_label(selected, format!("{dot} {}", p.name));
-                if resp.clicked() {
-                    *to_connect = Some(p.id);
-                }
-                resp.on_hover_text(format!("{}:{}", p.host, p.port));
+                ui.horizontal(|ui| {
+                    ui.colored_label(status_color(status), "●");
+                    let resp = ui
+                        .selectable_label(selected, &p.name)
+                        .on_hover_text(format!("{}:{}", p.host, p.port));
+                    if resp.clicked() {
+                        *to_connect = Some(p.id);
+                    }
+                });
             }
         }
     }
@@ -338,17 +337,9 @@ impl App {
             ui.horizontal(|ui| {
                 for id in &ids {
                     let session = &self.sessions[id];
-                    let dot = match session.status {
-                        Status::Connected => "🟢",
-                        Status::Connecting => "🟡",
-                        Status::Reconnecting { .. } => "🟠",
-                        Status::Disconnected(_) => "🔴",
-                    };
                     let selected = self.active == Some(*id);
-                    if ui
-                        .selectable_label(selected, format!("{dot} {}", session.name))
-                        .clicked()
-                    {
+                    ui.colored_label(status_color(Some(&session.status)), "●");
+                    if ui.selectable_label(selected, &session.name).clicked() {
                         activate = Some(*id);
                     }
                     if ui.small_button("✖").on_hover_text("Disconnect").clicked() {
@@ -506,10 +497,12 @@ fn render_parameter(
     entry: &crate::model::Entry,
     commands: &mut Vec<NetCommand>,
 ) {
-    let row = ui.horizontal(|ui| {
+    ui.horizontal(|ui| {
         ui.add_space(18.0);
+        // Attach the context menu to the (interactive) label, like node headers.
         ui.label(egui::RichText::new(entry.label()).strong())
-            .on_hover_text(format!("path {}", path_string(&entry.path)));
+            .on_hover_text(format!("path {}", path_string(&entry.path)))
+            .context_menu(|ui| context_copy(ui, &entry.path, &entry.identifier));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if entry.param_type == Some(glow::parameter_type::TRIGGER) {
                 if ui.button("Fire").clicked() {
@@ -524,8 +517,6 @@ fn render_parameter(
             }
         });
     });
-    row.response
-        .context_menu(|ui| context_copy(ui, &entry.path, &entry.identifier));
 }
 
 /// A type-appropriate inline editor for a writable parameter.
@@ -577,6 +568,18 @@ fn editor(
         Some(Value::Octets(_)) => {
             ui.weak("<octets>");
         }
+    }
+}
+
+/// A status-indicator colour chosen to read on both light and dark themes.
+fn status_color(status: Option<&Status>) -> egui::Color32 {
+    use egui::Color32;
+    match status {
+        Some(Status::Connected) => Color32::from_rgb(40, 160, 80),
+        Some(Status::Connecting) => Color32::from_rgb(190, 140, 0),
+        Some(Status::Reconnecting { .. }) => Color32::from_rgb(210, 120, 20),
+        Some(Status::Disconnected(_)) => Color32::from_rgb(200, 60, 60),
+        None => Color32::GRAY,
     }
 }
 
