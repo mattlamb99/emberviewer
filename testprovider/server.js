@@ -86,9 +86,15 @@ const jsonTree = [
                 targetCount: 4,
                 sourceCount: 4,
                 // Initial crosspoints: target 0 <- source 0, target 1 <- source 2.
+                // All targets listed (even empty) so node-emberplus pre-creates a
+                // MatrixConnection per target — its connect handler dereferences
+                // matrix.connections[target] before creating it, so undefined targets
+                // crash the handler and silently reject routes.
                 connections: {
                     0: { target: 0, sources: [0] },
                     1: { target: 1, sources: [2] },
+                    2: { target: 2, sources: [] },
+                    3: { target: 3, sources: [] },
                 },
                 // NOTE: a `labels` descriptor (basePath -> child label node) is
                 // intentionally omitted: node-emberplus's server fails to encode a

@@ -1081,6 +1081,12 @@ fn render_matrix(
     egui::ScrollArea::horizontal()
         .id_salt(("mscroll", &path))
         .show(ui, |ui| {
+            // Stronger alternating row shading than the default faint stripe.
+            ui.visuals_mut().faint_bg_color = if ui.visuals().dark_mode {
+                egui::Color32::from_gray(58)
+            } else {
+                egui::Color32::from_gray(214)
+            };
             egui::Grid::new(("matrix", &path))
                 .striped(true)
                 .spacing(egui::vec2(2.0, 2.0))
