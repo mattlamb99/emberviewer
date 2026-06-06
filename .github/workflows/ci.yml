@@ -50,3 +50,25 @@ jobs:
 
       - name: cargo test
         run: cargo test --workspace
+
+  web-wasm:
+    name: web client (wasm build)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain (+ wasm target)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy
+
+      - name: Cache cargo & target
+        uses: Swatinem/rust-cache@v2
+
+      # The browser UI is a wasm cdylib built from the same crate; the native
+      # jobs above never compile it, so check it here to keep server mode's
+      # embedded bundle building.
+      - name: cargo clippy (wasm)
+        run: cargo clippy --lib -p emberviewer --target wasm32-unknown-unknown -- -D warnings

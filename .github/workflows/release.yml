@@ -13,8 +13,50 @@ env:
   BIN_NAME: emberviewer
 
 jobs:
+  # Build the browser (wasm) UI bundle once. It is OS-independent, so the three
+  # native release jobs download it and embed it (rust-embed) — otherwise their
+  # binaries would ship the build.rs placeholder page instead of the real web UI.
+  web-bundle:
+    name: web bundle (wasm)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain (+ wasm target)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo & target
+        uses: Swatinem/rust-cache@v2
+
+      - name: Resolve wasm-bindgen version (must match the crate)
+        id: wb
+        run: |
+          v=$(cargo metadata --format-version=1 --locked \
+                | jq -r '[.packages[] | select(.name=="wasm-bindgen") | .version] | unique | .[0]')
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "wasm-bindgen $v"
+
+      - name: Install wasm-bindgen-cli
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen-cli@${{ steps.wb.outputs.version }}
+
+      - name: Build web bundle
+        run: bash scripts/build-web.sh
+
+      - name: Upload web bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: crates/emberviewer/web-dist/
+          if-no-files-found: error
+
   release:
     name: release (${{ matrix.os }})
+    needs: web-bundle
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -49,6 +91,12 @@ jobs:
 
       - name: Cache cargo & target
         uses: Swatinem/rust-cache@v2
+
+      - name: Download web bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: crates/emberviewer/web-dist/
 
       - name: Build release binary
         run: cargo build --release --package emberviewer
