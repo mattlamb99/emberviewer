@@ -529,13 +529,22 @@ impl TreeModel {
                 continue;
             }
             if let Some(m) = self.entries.get_mut(&mpath).and_then(|e| e.matrix.as_mut()) {
-                // Use the real (sparse) signal numbers from the labels for the grid.
+                // Names always come from the labels. The grid's signal numbers
+                // come from the matrix's own targets/sources lists when it sent
+                // them; only fall back to the (sparse) label keys when the matrix
+                // gave us nothing but a dense 0..count default.
+                let dense_t: Vec<u32> = (0..m.target_count).collect();
+                let dense_s: Vec<u32> = (0..m.source_count).collect();
                 if !targets.is_empty() {
-                    m.targets = targets.keys().copied().collect();
+                    if m.targets == dense_t {
+                        m.targets = targets.keys().copied().collect();
+                    }
                     m.target_labels = targets;
                 }
                 if !sources.is_empty() {
-                    m.sources = sources.keys().copied().collect();
+                    if m.sources == dense_s {
+                        m.sources = sources.keys().copied().collect();
+                    }
                     m.source_labels = sources;
                 }
             }

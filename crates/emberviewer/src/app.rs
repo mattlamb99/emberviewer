@@ -1278,6 +1278,12 @@ fn render_entry(
             .body(|ui| {
                 // Matrix grid / function form, when this node is one.
                 if let Some(m) = &entry.matrix {
+                    // The matrix's connections/targets/sources arrive from a
+                    // getDirectory on the matrix itself (not on its parent) — fetch
+                    // it once when the grid first shows.
+                    if session.label_fetch.insert(entry.path.clone()) {
+                        commands.push(NetCommand::GetDirectory(entry.path.clone()));
+                    }
                     // Eagerly fetch each label sub-tree: basePath → targets/sources
                     // → string params (number = signal id, value = name).
                     let bases = m.label_paths.clone();
@@ -1869,8 +1875,45 @@ fn render_matrix(
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(1.0, 1.0);
+            // Resizable row-label column width (persisted by egui/eframe).
+            let lw_id = egui::Id::new(("matrix_label_w", &path));
+            let mut label_w = ui.ctx().data_mut(|d| d.get_persisted::<f32>(lw_id)).unwrap_or(96.0);
+
+            // Draw a left row-label cell (signal number + name), clipped to width.
+            let row_label = |ui: &mut egui::Ui, w: f32, num: u32, name: Option<&String>| {
+                let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, CELL), egui::Sense::hover());
+                let text = match name {
+                    Some(n) => format!("{num} {n}"),
+                    None => num.to_string(),
+                };
+                // painter_at clips the text to the cell, so long names truncate.
+                ui.painter_at(rect).text(
+                    egui::pos2(rect.left() + 2.0, rect.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    text,
+                    egui::FontId::proportional(10.0),
+                    ui.visuals().text_color(),
+                );
+                resp
+            };
+
             ui.horizontal(|ui| {
-                draw_label(ui, "", false);
+                // Corner cell doubles as a drag handle to resize the label column.
+                let (crect, cresp) =
+                    ui.allocate_exact_size(egui::vec2(label_w, CELL), egui::Sense::drag());
+                ui.painter().text(
+                    crect.right_center() - egui::vec2(2.0, 0.0),
+                    egui::Align2::RIGHT_CENTER,
+                    format!("{row_kind}\\{col_kind}"),
+                    egui::FontId::proportional(9.0),
+                    ui.visuals().weak_text_color(),
+                );
+                if cresp.dragged() {
+                    label_w = (label_w + cresp.drag_delta().x).clamp(24.0, 480.0);
+                }
+                cresp
+                    .on_hover_cursor(egui::CursorIcon::ResizeHorizontal)
+                    .on_hover_text("drag to resize the label column");
                 for &c in col_signals {
                     draw_label(ui, &c.to_string(), false)
                         .on_hover_text(head_tip(col_labels, col_kind, c));
@@ -1878,7 +1921,7 @@ fn render_matrix(
             });
             for (ri, &r) in row_signals.iter().enumerate() {
                 ui.horizontal(|ui| {
-                    draw_label(ui, &r.to_string(), true)
+                    row_label(ui, label_w, r, row_labels.get(&r))
                         .on_hover_text(head_tip(row_labels, row_kind, r));
                     let row_bg = if ri % 2 == 0 { light_row } else { dark_row };
                     for &c in col_signals {
@@ -1916,6 +1959,7 @@ fn render_matrix(
                     }
                 });
             }
+            ui.ctx().data_mut(|d| d.insert_persisted(lw_id, label_w));
         });
         });
 }
