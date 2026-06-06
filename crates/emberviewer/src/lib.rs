@@ -11,6 +11,7 @@ mod app;
 mod discovery;
 #[cfg(not(target_arch = "wasm32"))]
 mod hub;
+mod matrix_view;
 mod model;
 mod net;
 #[cfg(not(target_arch = "wasm32"))]

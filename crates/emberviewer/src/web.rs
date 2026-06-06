@@ -9,7 +9,8 @@ use std::collections::{HashMap, HashSet};
 use ember_proto::glow::{self, Value};
 use ember_web_proto::{ClientMsg, WireProvider, WireStatus};
 
-use crate::model::{format_value, Kind, TreeModel};
+use crate::matrix_view;
+use crate::model::{format_value, Kind, MatrixInfo, TreeModel};
 use crate::net::NetCommand;
 use crate::web_transport::{WebEvent, WsConnection};
 
@@ -27,6 +28,8 @@ pub struct WebApp {
     status: Option<WireStatus>,
     /// Nodes we've already asked to expand (so we fetch each once).
     requested: HashSet<Vec<u32>>,
+    /// Matrix-related sub-trees already requested (matrix dir, labels, params).
+    matrix_fetch: HashSet<Vec<u32>>,
     /// Parameters we hold a subscription for.
     subscribed: HashSet<Vec<u32>>,
     /// In-progress string edits, keyed by path.
@@ -54,6 +57,7 @@ impl WebApp {
             tree: TreeModel::new(),
             status: None,
             requested: HashSet::new(),
+            matrix_fetch: HashSet::new(),
             subscribed: HashSet::new(),
             edits: HashMap::new(),
             denied: None,
@@ -65,6 +69,7 @@ impl WebApp {
         self.current = Some(id);
         self.tree = TreeModel::new();
         self.requested.clear();
+        self.matrix_fetch.clear();
         self.subscribed.clear();
         self.status = None;
         if let Some(c) = &self.conn {
@@ -198,6 +203,7 @@ impl eframe::App for WebApp {
                             &self.tree,
                             root,
                             &mut self.requested,
+                            &mut self.matrix_fetch,
                             &mut self.edits,
                             &mut commands,
                             &mut visible,
@@ -230,11 +236,13 @@ impl eframe::App for WebApp {
 
 /// Render one tree entry (recursively). Pushes commands and records visible
 /// parameter paths.
+#[allow(clippy::too_many_arguments)]
 fn render_node(
     ui: &mut egui::Ui,
     tree: &TreeModel,
     path: &[u32],
     requested: &mut HashSet<Vec<u32>>,
+    mfetch: &mut HashSet<Vec<u32>>,
     edits: &mut HashMap<Vec<u32>, String>,
     commands: &mut Vec<NetCommand>,
     visible: &mut Vec<Vec<u32>>,
@@ -244,15 +252,25 @@ fn render_node(
     };
 
     if entry.kind.is_expandable() {
-        // Matrices/functions are shown as a header but their rich UI is
-        // desktop-only for now; nodes expand to fetch children.
         let label = entry.label();
-        let suffix = match (entry.kind, &entry.matrix) {
-            (Kind::Matrix, Some(m)) => {
-                format!("  (matrix {}×{} — desktop)", m.target_count, m.source_count)
-            }
-            (Kind::Function, _) => "  (function — desktop)".to_string(),
-            _ => String::new(),
+
+        // Matrix: render the crosspoint grid in the header body (shared with the
+        // desktop). Fetch its directory + label/param sub-trees on first show.
+        if let (Kind::Matrix, Some(m)) = (entry.kind, &entry.matrix) {
+            egui::CollapsingHeader::new(egui::RichText::new(label).strong())
+                .id_salt(path)
+                .show(ui, |ui| {
+                    fetch_matrix(tree, path, m, mfetch, commands);
+                    let _ = matrix_view::render_matrix(ui, entry, m, true, commands);
+                });
+            return;
+        }
+
+        // Function: rich UI is desktop-only for now.
+        let suffix = if matches!(entry.kind, Kind::Function) {
+            "  (function — desktop)"
+        } else {
+            ""
         };
         let heading = if entry.is_online {
             egui::RichText::new(format!("{label}{suffix}"))
@@ -267,16 +285,12 @@ fn render_node(
                     ui.weak("…");
                 }
                 for child in &children {
-                    render_node(ui, tree, child, requested, edits, commands, visible);
+                    render_node(ui, tree, child, requested, mfetch, edits, commands, visible);
                 }
             });
         // On first expansion, fetch this node's children.
         if header.openness > 0.0 && requested.insert(path.to_vec()) {
-            commands.push(if matches!(entry.kind, Kind::Matrix) {
-                NetCommand::GetMatrixDirectory(path.to_vec())
-            } else {
-                NetCommand::GetDirectory(path.to_vec())
-            });
+            commands.push(NetCommand::GetDirectory(path.to_vec()));
         }
         return;
     }
@@ -402,6 +416,46 @@ fn status_text(st: &WireStatus) -> String {
             format!("disconnected · {}", reason.as_deref().unwrap_or("closed"))
         }
         WireStatus::Error { message } => format!("error · {message}"),
+    }
+}
+
+/// Fetch the data a matrix grid needs: the matrix's own directory (targets /
+/// sources / connections) and its label / parameter sub-trees. Deduped via
+/// `mfetch`; the label children fetch once they appear in the tree.
+fn fetch_matrix(
+    tree: &TreeModel,
+    path: &[u32],
+    m: &MatrixInfo,
+    mfetch: &mut HashSet<Vec<u32>>,
+    commands: &mut Vec<NetCommand>,
+) {
+    if mfetch.insert(path.to_vec()) {
+        commands.push(NetCommand::GetMatrixDirectory(path.to_vec()));
+    }
+    for base in &m.label_paths {
+        fetch_subtree(tree, base, mfetch, commands);
+    }
+    if let Some(ploc) = &m.params_location {
+        fetch_subtree(tree, ploc, mfetch, commands);
+    }
+}
+
+/// Fetch a sub-tree base and (once known) its immediate children.
+fn fetch_subtree(
+    tree: &TreeModel,
+    base: &[u32],
+    mfetch: &mut HashSet<Vec<u32>>,
+    commands: &mut Vec<NetCommand>,
+) {
+    if mfetch.insert(base.to_vec()) {
+        commands.push(NetCommand::GetDirectory(base.to_vec()));
+    }
+    if let Some(e) = tree.get(base) {
+        for child in &e.children {
+            if mfetch.insert(child.clone()) {
+                commands.push(NetCommand::GetDirectory(child.clone()));
+            }
+        }
     }
 }
 
