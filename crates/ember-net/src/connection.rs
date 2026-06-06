@@ -138,6 +138,21 @@ pub enum Inbound {
     KeepAliveRequest,
 }
 
+/// Whether full inbound frame dumping is enabled (env `EMBER_DUMP=1`).
+fn dump_frames() -> bool {
+    static D: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *D.get_or_init(|| {
+        std::env::var("EMBER_DUMP")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    })
+}
+
+/// Full hex of a payload.
+fn full_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// A short hex preview of a payload, for diagnostics.
 fn hex_preview(bytes: &[u8]) -> String {
     const MAX: usize = 512;
@@ -171,6 +186,13 @@ impl ProviderReader {
             for item in self.decoder.push(&self.read_buf[..n]) {
                 match item {
                     Ok(Incoming::EmberPayload(payload)) => {
+                        if dump_frames() {
+                            tracing::info!(
+                                "RX payload {} bytes: {}",
+                                payload.len(),
+                                full_hex(&payload)
+                            );
+                        }
                         let mut roots = Vec::new();
                         for result in glow::decode_roots(&payload) {
                             match result {

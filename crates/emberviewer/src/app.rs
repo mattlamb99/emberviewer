@@ -39,6 +39,18 @@ struct Session {
     next_invocation_id: i32,
     /// Parameter paths whose value changes are being logged.
     logged: HashSet<Vec<u32>>,
+    /// Currently selected parameter (shown in the right meter panel).
+    selected: Option<Vec<u32>>,
+    /// Popped-out meter windows for this session.
+    popped: Vec<PoppedMeter>,
+    /// Auto-tracked value range per meter path (for params without min/max).
+    meter_range: HashMap<Vec<u32>, (f64, f64)>,
+}
+
+/// A meter popped into its own always-pinnable window.
+struct PoppedMeter {
+    path: Vec<u32>,
+    always_on_top: bool,
 }
 
 /// One line in the change log.
@@ -236,6 +248,9 @@ impl App {
                 invocations: HashMap::new(),
                 next_invocation_id: 1,
                 logged: HashSet::new(),
+                selected: None,
+                popped: Vec::new(),
+                meter_range: HashMap::new(),
             },
         );
         self.active = Some(id);
@@ -343,6 +358,7 @@ impl eframe::App for App {
         self.pump_network();
         self.process_pulses(&ctx);
         self.poll_discovery(&ctx);
+        self.popped_meters(&ctx);
 
         egui::TopBottomPanel::top("menubar").show_inside(ui, |ui| {
             ui.horizontal(|ui| {
@@ -433,6 +449,8 @@ impl eframe::App for App {
                         });
                 });
         }
+
+        self.meter_panel(ui);
 
         egui::CentralPanel::default().show_inside(ui, |ui| {
             self.tree_panel(ui);
@@ -991,6 +1009,104 @@ impl App {
         })
     }
 
+    /// Right-side vertical meter for the active session's selected parameter.
+    fn meter_panel(&mut self, ui: &mut egui::Ui) {
+        let Some(id) = self.active else { return };
+        let Some(session) = self.sessions.get_mut(&id) else { return };
+        let Some(path) = session.selected.clone() else { return };
+        let Some(entry) = session.tree.get(&path).cloned() else { return };
+        if !is_meterable(&entry) {
+            return;
+        }
+        let range = meter_range(&entry, &mut session.meter_range);
+        let value = entry.value.as_ref().and_then(value_f64);
+        egui::SidePanel::right("meterpanel")
+            .exact_width(96.0)
+            .show_inside(ui, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new(entry.label()).small().strong());
+                    let h = (ui.available_height() - 22.0).max(40.0);
+                    draw_vmeter(ui, value, range, 30.0, h);
+                    if let Some(v) = value {
+                        ui.label(egui::RichText::new(format!("{v:.2}")).small());
+                    }
+                });
+            });
+    }
+
+    /// Render each popped-out meter as its own (optionally always-on-top) window.
+    fn popped_meters(&mut self, ctx: &egui::Context) {
+        let Some(id) = self.active else { return };
+        let Some(session) = self.sessions.get_mut(&id) else { return };
+        let items: Vec<(usize, Vec<u32>, bool)> = session
+            .popped
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (i, p.path.clone(), p.always_on_top))
+            .collect();
+        let mut to_close = Vec::new();
+        let mut to_toggle = Vec::new();
+        for (i, path, aot) in items {
+            let Some(entry) = session.tree.get(&path).cloned() else { continue };
+            let range = meter_range(&entry, &mut session.meter_range);
+            let value = entry.value.as_ref().and_then(value_f64);
+            let title = entry.label();
+            let vp_id = egui::ViewportId::from_hash_of(("popmeter", id, &path));
+            let mut builder = egui::ViewportBuilder::default()
+                .with_title(format!("{title} — meter"))
+                .with_inner_size([130.0, 280.0])
+                .with_min_inner_size([90.0, 140.0]);
+            if aot {
+                builder = builder.with_always_on_top();
+            }
+            let mut close = false;
+            let mut toggle = false;
+            ctx.show_viewport_immediate(vp_id, builder, |ctx, _| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.label(egui::RichText::new(&title).strong());
+                        let h = (ui.available_height() - 46.0).max(50.0);
+                        let resp = draw_vmeter(ui, value, range, 40.0, h);
+                        if let Some(v) = value {
+                            ui.label(format!("{v:.3}"));
+                        }
+                        resp.context_menu(|ui| {
+                            let l = if aot { "Unpin (always on top)" } else { "Always on top" };
+                            if ui.button(l).clicked() {
+                                toggle = true;
+                                ui.close();
+                            }
+                            if ui.button("Close").clicked() {
+                                close = true;
+                                ui.close();
+                            }
+                        });
+                    });
+                });
+                if ctx.input(|i| i.viewport().close_requested()) {
+                    close = true;
+                }
+            });
+            if close {
+                to_close.push(i);
+            }
+            if toggle {
+                to_toggle.push(i);
+            }
+        }
+        for i in to_toggle {
+            if let Some(p) = session.popped.get_mut(i) {
+                p.always_on_top = !p.always_on_top;
+            }
+        }
+        for i in to_close.into_iter().rev() {
+            if i < session.popped.len() {
+                session.popped.remove(i);
+            }
+        }
+    }
+
     /// One tab per open connection, with status dot and a close button.
     fn tabs(&mut self, ui: &mut egui::Ui) {
         if self.sessions.is_empty() {
@@ -1083,15 +1199,18 @@ impl App {
                     if allowed.is_empty() {
                         ui.weak("no matches in loaded tree");
                     }
+                    let mut row = 0usize;
                     for root in &roots {
                         render_filtered(
-                            ui, session, root, allowed, &opts, true, &mut commands, &mut visible,
+                            ui, session, root, allowed, &opts, true, &mut row, &mut commands,
+                            &mut visible,
                         );
                     }
                 } else {
+                    let mut row = 0usize;
                     for root in &roots {
                         render_entry(
-                            ui, session, root, &opts, true, &mut commands, &mut visible,
+                            ui, session, root, &opts, true, &mut row, &mut commands, &mut visible,
                         );
                     }
                 }
@@ -1125,6 +1244,7 @@ fn render_entry(
     path: &[u32],
     opts: &RenderOpts,
     online: bool,
+    row: &mut usize,
     commands: &mut Vec<NetCommand>,
     visible: &mut Vec<Vec<u32>>,
 ) {
@@ -1155,13 +1275,19 @@ fn render_entry(
             .body(|ui| {
                 // Matrix grid / function form, when this node is one.
                 if let Some(m) = &entry.matrix {
+                    // Fetch label sub-nodes (source/target names) on first view.
+                    for lp in &m.label_paths {
+                        if session.tree.get(lp).is_none() {
+                            commands.push(NetCommand::GetDirectory(lp.clone()));
+                        }
+                    }
                     render_matrix(ui, &entry, m, opts, commands);
                 } else if let Some(f) = &entry.function {
                     render_function(ui, session, &entry, f, commands);
                 }
                 let children = sorted_paths(&session.tree, &entry.children, opts.order_by);
                 for child in &children {
-                    render_entry(ui, session, child, opts, eff_online, commands, visible);
+                    render_entry(ui, session, child, opts, eff_online, row, commands, visible);
                 }
                 if children.is_empty() && entry.matrix.is_none() && entry.function.is_none() {
                     ui.weak("…");
@@ -1180,7 +1306,7 @@ fn render_entry(
     } else {
         // A leaf parameter is on screen → eligible for a live subscription.
         visible.push(path.to_vec());
-        render_parameter(ui, session, &entry, opts, eff_online, commands);
+        render_parameter(ui, session, &entry, opts, eff_online, row, commands);
     }
 }
 
@@ -1191,40 +1317,46 @@ fn render_parameter(
     entry: &crate::model::Entry,
     opts: &RenderOpts,
     online: bool,
+    row: &mut usize,
     commands: &mut Vec<NetCommand>,
 ) {
     let label = param_label(entry, opts);
     let logging = session.logged.contains(&entry.path);
     let eff_online = online && entry.is_online;
-    ui.horizontal(|ui| {
-        if !eff_online {
-            ui.disable();
-        }
-        ui.add_space(8.0);
-        // A red dot marks a parameter whose changes are being logged.
-        if logging {
-            paint_dot(ui, egui::Color32::from_rgb(210, 60, 60));
-        }
-        // Read-only vs writable badge.
-        let (badge, color) = if entry.is_writable() {
-            ("rw", egui::Color32::from_rgb(70, 130, 200))
-        } else {
-            ("ro", egui::Color32::from_gray(140))
-        };
-        ui.label(egui::RichText::new(badge).monospace().small().color(color))
-            .on_hover_text(if entry.is_writable() {
-                "writable"
+    let selected = session.selected.as_deref() == Some(entry.path.as_slice());
+    let meterable = is_meterable(entry);
+
+    // Reserve a background shape so striping/selection paints behind the row.
+    let bg = ui.painter().add(egui::Shape::Noop);
+    let resp = ui
+        .horizontal(|ui| {
+            if !eff_online {
+                ui.disable();
+            }
+            ui.add_space(8.0);
+            if logging {
+                paint_dot(ui, egui::Color32::from_rgb(210, 60, 60));
+            }
+            let (badge, color) = if entry.is_writable() {
+                ("rw", egui::Color32::from_rgb(70, 130, 200))
             } else {
-                "read-only"
-            });
-        // Attach the context menu to the (interactive) label, like node headers.
-        ui.label(egui::RichText::new(label).strong())
-            .on_hover_text(format!("path {}", path_string(&entry.path)))
-            .context_menu(|ui| {
+                ("ro", egui::Color32::from_gray(140))
+            };
+            ui.label(egui::RichText::new(badge).monospace().small().color(color))
+                .on_hover_text(if entry.is_writable() { "writable" } else { "read-only" });
+
+            // Clicking the name selects the parameter (drives the meter panel).
+            let name = ui
+                .selectable_label(selected, egui::RichText::new(label).strong())
+                .on_hover_text(format!("path {}", path_string(&entry.path)));
+            if name.clicked() {
+                session.selected = Some(entry.path.clone());
+            }
+            name.context_menu(|ui| {
                 context_copy(ui, &entry.path, &entry.identifier);
                 ui.separator();
-                let label = if logging { "Stop logging" } else { "Log changes" };
-                if ui.button(label).clicked() {
+                let l = if logging { "Stop logging" } else { "Log changes" };
+                if ui.button(l).clicked() {
                     if logging {
                         session.logged.remove(&entry.path);
                     } else {
@@ -1232,21 +1364,50 @@ fn render_parameter(
                     }
                     ui.close();
                 }
-            });
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if entry.param_type == Some(glow::parameter_type::TRIGGER) {
-                if ui.button("Fire").clicked() {
-                    commands.push(NetCommand::SetValue(entry.path.clone(), Value::Integer(0)));
+                if meterable && ui.button("Pop out meter").clicked() {
+                    if !session.popped.iter().any(|p| p.path == entry.path) {
+                        session.popped.push(PoppedMeter {
+                            path: entry.path.clone(),
+                            always_on_top: false,
+                        });
+                    }
+                    ui.close();
                 }
-            } else if entry.is_writable() {
-                editor(ui, session, entry, opts, commands);
-            } else if let Some(v) = &entry.value {
-                ui.label(display_value(entry, v));
-            } else {
-                ui.weak("—");
-            }
-        });
-    });
+            });
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // Keep values clear of the (Windows) scrollbar.
+                ui.add_space(14.0);
+                if entry.param_type == Some(glow::parameter_type::TRIGGER) {
+                    if ui.button("Fire").clicked() {
+                        commands
+                            .push(NetCommand::SetValue(entry.path.clone(), Value::Integer(0)));
+                    }
+                } else if entry.is_writable() {
+                    editor(ui, session, entry, opts, commands);
+                } else if let Some(v) = &entry.value {
+                    ui.label(display_value(entry, v));
+                } else {
+                    ui.weak("—");
+                }
+            });
+        })
+        .response;
+
+    // Paint selection highlight or a faint stripe behind the row.
+    let row_rect = egui::Rect::from_x_y_ranges(ui.max_rect().x_range(), resp.rect.y_range());
+    if selected {
+        ui.painter()
+            .set(bg, egui::Shape::rect_filled(row_rect, 0.0, ui.visuals().selection.bg_fill.gamma_multiply(0.35)));
+    } else if *row % 2 == 1 {
+        let stripe = if ui.visuals().dark_mode {
+            egui::Color32::from_white_alpha(8)
+        } else {
+            egui::Color32::from_black_alpha(8)
+        };
+        ui.painter().set(bg, egui::Shape::rect_filled(row_rect, 0.0, stripe));
+    }
+    *row += 1;
 }
 
 /// A type-appropriate inline editor for a writable parameter.
@@ -1384,6 +1545,85 @@ fn display_value(entry: &crate::model::Entry, v: &Value) -> String {
     }
 }
 
+/// A numeric value as f64, if the value is numeric.
+fn value_f64(v: &Value) -> Option<f64> {
+    match v {
+        Value::Integer(i) => Some(*i as f64),
+        Value::Real(r) => Some(r.to_f64()),
+        _ => None,
+    }
+}
+
+/// Whether a parameter can be shown as a meter (numeric value).
+fn is_meterable(entry: &crate::model::Entry) -> bool {
+    entry.value.as_ref().and_then(value_f64).is_some()
+}
+
+/// The meter range for an entry: explicit min/max if present, else an
+/// auto-tracked range that expands to fit observed values.
+fn meter_range(
+    entry: &crate::model::Entry,
+    tracked: &mut HashMap<Vec<u32>, (f64, f64)>,
+) -> (f64, f64) {
+    if let (Some(lo), Some(hi)) = (
+        entry.minimum.as_ref().and_then(value_f64),
+        entry.maximum.as_ref().and_then(value_f64),
+    ) {
+        if hi > lo {
+            return (lo, hi);
+        }
+    }
+    let v = entry.value.as_ref().and_then(value_f64).unwrap_or(0.0);
+    let range = tracked.entry(entry.path.clone()).or_insert((v - 0.5, v + 0.5));
+    range.0 = range.0.min(v);
+    range.1 = range.1.max(v);
+    if range.1 - range.0 < 1e-6 {
+        range.1 = range.0 + 1.0;
+    }
+    *range
+}
+
+/// A green→amber→red colour for a 0..1 meter fraction.
+fn meter_color(frac: f32) -> egui::Color32 {
+    if frac < 0.6 {
+        egui::Color32::from_rgb(40, 170, 80)
+    } else if frac < 0.85 {
+        egui::Color32::from_rgb(210, 170, 30)
+    } else {
+        egui::Color32::from_rgb(210, 70, 60)
+    }
+}
+
+/// Draw a vertical bar-graph meter filling `width` × `height`.
+fn draw_vmeter(
+    ui: &mut egui::Ui,
+    value: Option<f64>,
+    range: (f64, f64),
+    width: f32,
+    height: f32,
+) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click());
+    let painter = ui.painter();
+    painter.rect_filled(rect, 3.0, ui.visuals().extreme_bg_color);
+    painter.rect_stroke(
+        rect,
+        3.0,
+        egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
+        egui::StrokeKind::Inside,
+    );
+    if let Some(v) = value {
+        let (min, max) = range;
+        let frac = (((v - min) / (max - min)) as f32).clamp(0.0, 1.0);
+        let fill_h = (rect.height() - 2.0) * frac;
+        let fill = egui::Rect::from_min_max(
+            egui::pos2(rect.min.x + 1.0, rect.max.y - 1.0 - fill_h),
+            egui::pos2(rect.max.x - 1.0, rect.max.y - 1.0),
+        );
+        painter.rect_filled(fill, 2.0, meter_color(frac));
+    }
+    resp
+}
+
 /// Paint a small filled status dot inline (drawn, not a font glyph, so it always
 /// renders regardless of the available fonts).
 fn paint_dot(ui: &mut egui::Ui, color: egui::Color32) {
@@ -1485,6 +1725,7 @@ fn render_filtered(
     allowed: &HashSet<Vec<u32>>,
     opts: &RenderOpts,
     online: bool,
+    row: &mut usize,
     commands: &mut Vec<NetCommand>,
     visible: &mut Vec<Vec<u32>>,
 ) {
@@ -1501,12 +1742,14 @@ fn render_filtered(
         ui.indent(("filt", path), |ui| {
             let children = sorted_paths(&session.tree, &entry.children, opts.order_by);
             for child in &children {
-                render_filtered(ui, session, child, allowed, opts, eff_online, commands, visible);
+                render_filtered(
+                    ui, session, child, allowed, opts, eff_online, row, commands, visible,
+                );
             }
         });
     } else {
         visible.push(path.to_vec());
-        render_parameter(ui, session, &entry, opts, eff_online, commands);
+        render_parameter(ui, session, &entry, opts, eff_online, row, commands);
     }
 }
 
@@ -1622,7 +1865,7 @@ fn render_matrix(
                         let tname = m.target_labels.get(&t).map(|n| format!(" ({n})")).unwrap_or_default();
                         let sname = m.source_labels.get(&s).map(|n| format!(" ({n})")).unwrap_or_default();
                         let resp = resp
-                            .on_hover_text(format!("target {t}{tname} ← source {s}{sname}"));
+                            .on_hover_text(format!("target {t}{tname} <- source {s}{sname}"));
                         if resp.clicked() {
                             let operation = if on {
                                 glow::connection_operation::DISCONNECT
