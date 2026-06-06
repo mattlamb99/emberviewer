@@ -59,6 +59,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_server_port() -> u16 {
+    8080
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     #[serde(default)]
@@ -85,6 +89,22 @@ pub struct Settings {
     /// Use egui's dark theme (light theme when false).
     #[serde(default = "default_true")]
     pub dark_mode: bool,
+    /// Serve the web UI (browser access to this instance) when true.
+    #[serde(default)]
+    pub server_enabled: bool,
+    /// TCP port for the web server.
+    #[serde(default = "default_server_port")]
+    pub server_port: u16,
+    /// Shared access token required to load the page / open the WebSocket
+    /// (ignored in open-LAN mode). Empty = generate one when first enabled.
+    #[serde(default)]
+    pub server_token: String,
+    /// Skip the token check — anyone on the LAN can view/control. Use with care.
+    #[serde(default)]
+    pub server_open_lan: bool,
+    /// Web clients may view but not change values/routes/invoke.
+    #[serde(default)]
+    pub server_read_only: bool,
     /// Optional path to append parameter-change logs to (empty = window only).
     #[serde(default)]
     pub log_file: String,
@@ -104,6 +124,11 @@ impl Default for Settings {
             send_keepalive: true,
             matrix_targets_on_top: true,
             dark_mode: true,
+            server_enabled: false,
+            server_port: default_server_port(),
+            server_token: String::new(),
+            server_open_lan: false,
+            server_read_only: false,
             log_file: String::new(),
             last_connected: Vec::new(),
         }

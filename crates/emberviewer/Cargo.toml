@@ -19,5 +19,8 @@ thiserror.workspace = true
 directories = "6"
 eframe = "0.34.3"
 egui = "0.34.3"
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
 mdns-sd = "0.20.0"
+axum = { version = "0.8", features = ["ws"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+rand = "0.8"

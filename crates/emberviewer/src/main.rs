@@ -8,8 +8,9 @@ mod discovery;
 mod hub;
 mod model;
 mod net;
+mod server;
 mod settings;
-// Used by server mode and the wasm client (wired up in later phases).
+// Some conversions here serve the wasm client, which lands in a later phase.
 #[allow(dead_code)]
 mod wire;
 

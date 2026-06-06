@@ -8,7 +8,7 @@
 
 use ember_proto::glow::{Root, Value};
 
-use crate::hub::{Hub, Subscriber};
+use crate::hub::{HubLease, HubRegistry};
 
 /// A command from a consumer to a connection.
 #[derive(Debug, Clone)]
@@ -56,35 +56,34 @@ pub enum NetEvent {
     Error(String),
 }
 
-/// UI-side handle to a running connection: a [`Hub`] (owning the connection) and
-/// the desktop's own [`Subscriber`] on it. Dropping the handle drops the Hub,
-/// which shuts the connection down.
+/// UI-side handle to a running connection: the desktop's [`HubLease`] on the
+/// shared per-provider Hub. Dropping it releases the desktop's view (and shuts
+/// the connection down if no other viewer — e.g. a browser — holds it).
 pub struct ConnectionHandle {
-    _hub: Hub,
-    sub: Subscriber,
+    lease: HubLease,
 }
 
 impl ConnectionHandle {
-    /// Spawn a connection on `rt` connecting to `addr`. `ctx` wakes the UI when
-    /// events arrive.
-    pub fn spawn(
-        rt: &tokio::runtime::Handle,
+    /// Attach the desktop as a viewer of provider `id` (connecting to `addr` if
+    /// it isn't already open).
+    pub fn open(
+        registry: &HubRegistry,
+        id: u64,
         addr: String,
-        ctx: egui::Context,
         keepalive: bool,
     ) -> ConnectionHandle {
-        let hub = Hub::spawn(rt, addr, ctx, keepalive);
-        let sub = hub.subscribe();
-        ConnectionHandle { _hub: hub, sub }
+        ConnectionHandle {
+            lease: registry.open(id, addr, keepalive),
+        }
     }
 
     /// Send a command (ignored if the connection has ended).
     pub fn send(&self, cmd: NetCommand) {
-        self.sub.send(cmd);
+        self.lease.send(cmd);
     }
 
     /// Drain all pending events.
     pub fn drain(&mut self) -> Vec<NetEvent> {
-        self.sub.drain()
+        self.lease.drain()
     }
 }

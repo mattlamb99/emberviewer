@@ -6,12 +6,16 @@
 #![allow(deprecated)]
 
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 
 use ember_proto::glow::{self, Value};
+use ember_web_proto::WireProvider;
 
 use crate::address_book::{AddressBook, Id, Node, DEFAULT_PORT};
+use crate::hub::HubRegistry;
 use crate::model::{format_value, TreeModel};
 use crate::net::{ConnectionHandle, NetCommand, NetEvent};
+use crate::server::{self, ServerHandle};
 use crate::settings::{OrderBy, Settings, StartupMode};
 
 /// State for one open provider connection.
@@ -145,6 +149,12 @@ pub struct App {
     /// Theme currently applied to the egui context (`None` until the first frame
     /// applies it). Re-applied whenever it differs from `settings.dark_mode`.
     applied_dark: Option<bool>,
+    /// Shared per-provider connections (desktop + web viewers).
+    hubs: HubRegistry,
+    /// Provider list exposed to the web server (kept in sync with the book).
+    catalog: server::Catalog,
+    /// Running web server, when server mode is enabled.
+    server: Option<ServerHandle>,
 }
 
 /// The project's warm-orange brand accent.
@@ -167,6 +177,12 @@ fn apply_theme(ctx: &egui::Context, dark: bool) {
     ctx.set_visuals(visuals);
 }
 
+/// A random hex access token for server mode.
+fn generate_token() -> String {
+    let bytes: [u8; 16] = rand::random();
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let rt = tokio::runtime::Builder::new_multi_thread()
@@ -176,6 +192,7 @@ impl App {
             .expect("tokio runtime");
         let book = AddressBook::load().unwrap_or_default();
         let settings = Settings::load();
+        let hubs = HubRegistry::new(rt.handle().clone(), cc.egui_ctx.clone());
         let mut app = App {
             rt,
             book,
@@ -193,10 +210,14 @@ impl App {
             show_discovery: false,
             show_about: false,
             applied_dark: None,
+            hubs,
+            catalog: Arc::new(Mutex::new(Vec::new())),
+            server: None,
         };
         // The theme is applied from within `ui()` (eframe overrides visuals set
         // here during construction, which is why the startup theme didn't stick).
         app.apply_startup_mode(&cc.egui_ctx.clone());
+        app.sync_server(); // resume server mode if it was enabled at last shutdown
         app
     }
 
@@ -241,28 +262,23 @@ impl App {
         }
     }
 
-    /// Close a session: ask the task to stop and drop its state.
+    /// Close a session: drop the desktop's view. The shared connection stays up
+    /// only if a web client is still viewing it.
     fn disconnect(&mut self, id: Id) {
-        if let Some(session) = self.sessions.remove(&id) {
-            session.handle.send(NetCommand::Disconnect);
-        }
+        self.sessions.remove(&id);
         if self.active == Some(id) {
             self.active = self.sessions.keys().copied().next();
         }
         self.remember_session();
     }
 
-    fn connect(&mut self, id: Id, ctx: &egui::Context) {
+    fn connect(&mut self, id: Id, _ctx: &egui::Context) {
         let Some(provider) = self.book.find_provider(id).cloned() else {
             return;
         };
         let addr = format!("{}:{}", provider.host, provider.port);
-        let handle = ConnectionHandle::spawn(
-            self.rt.handle(),
-            addr.clone(),
-            ctx.clone(),
-            self.settings.send_keepalive,
-        );
+        let handle =
+            ConnectionHandle::open(&self.hubs, id, addr.clone(), self.settings.send_keepalive);
         self.sessions.insert(
             id,
             Session {
@@ -289,6 +305,73 @@ impl App {
         );
         self.active = Some(id);
         self.remember_session();
+    }
+
+    /// Rebuild the provider list the web server exposes from the address book.
+    fn refresh_catalog(&self) {
+        let list: Vec<WireProvider> = self
+            .book
+            .iter()
+            .filter_map(|(_, n)| match n {
+                Node::Provider(p) => Some(WireProvider {
+                    id: p.id,
+                    name: p.name.clone(),
+                    host: p.host.clone(),
+                    port: p.port,
+                }),
+                Node::Folder(_) => None,
+            })
+            .collect();
+        *self.catalog.lock().unwrap() = list;
+    }
+
+    /// Start or stop the web server to match `settings.server_enabled`.
+    fn sync_server(&mut self) {
+        match (self.settings.server_enabled, self.server.is_some()) {
+            (true, false) => {
+                if self.settings.server_token.trim().is_empty() && !self.settings.server_open_lan {
+                    self.settings.server_token = generate_token();
+                    let _ = self.settings.save();
+                }
+                self.refresh_catalog();
+                let cfg = server::ServerConfig {
+                    port: self.settings.server_port,
+                    token: self.settings.server_token.clone(),
+                    open_lan: self.settings.server_open_lan,
+                    read_only: self.settings.server_read_only,
+                    keepalive: self.settings.send_keepalive,
+                };
+                match server::start(
+                    self.rt.handle(),
+                    self.hubs.clone(),
+                    self.catalog.clone(),
+                    cfg,
+                ) {
+                    Ok(h) => {
+                        self.status_line = format!("server listening on port {}", h.bound.port());
+                        self.server = Some(h);
+                    }
+                    Err(e) => {
+                        self.status_line = format!("server failed to start: {e}");
+                        self.settings.server_enabled = false;
+                        let _ = self.settings.save();
+                    }
+                }
+            }
+            (false, true) => {
+                self.server = None; // drop → graceful shutdown
+                self.status_line = "server stopped".into();
+            }
+            _ => {}
+        }
+    }
+
+    /// Restart the server (after a config change) if it is running.
+    fn restart_server(&mut self) {
+        if self.server.is_some() {
+            self.server = None;
+            self.sync_server();
+        }
     }
 
     /// Drain network events for every session and apply them to the model.
@@ -408,6 +491,10 @@ impl eframe::App for App {
         if self.applied_dark != Some(self.settings.dark_mode) {
             apply_theme(&ctx, self.settings.dark_mode);
             self.applied_dark = Some(self.settings.dark_mode);
+        }
+        // Keep the web server's provider list current with the address book.
+        if self.server.is_some() {
+            self.refresh_catalog();
         }
         self.pump_network();
         self.process_pulses(&ctx);
@@ -916,6 +1003,10 @@ impl App {
         }
         let mut open = self.show_options;
         let mut changed = false;
+        // Server start/stop is deferred until after the window closure (it needs
+        // a clean &mut self).
+        let mut do_sync = false;
+        let mut do_restart = false;
         egui::Window::new("Options")
             .open(&mut open)
             .resizable(false)
@@ -998,8 +1089,75 @@ impl App {
                     self.applied_dark = Some(self.settings.dark_mode);
                     changed = true;
                 }
+
+                ui.separator();
+                ui.label(egui::RichText::new("Server mode (browser access)").strong());
+                if ui
+                    .checkbox(&mut self.settings.server_enabled, "Enable web server")
+                    .on_hover_text("Serve this instance to browsers on your network")
+                    .changed()
+                {
+                    changed = true;
+                    do_sync = true;
+                }
+                ui.horizontal(|ui| {
+                    ui.label("Port");
+                    if ui
+                        .add(egui::DragValue::new(&mut self.settings.server_port).range(1..=65535))
+                        .changed()
+                    {
+                        changed = true;
+                        do_restart = true;
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Token");
+                    if ui
+                        .add(
+                            egui::TextEdit::singleline(&mut self.settings.server_token)
+                                .desired_width(160.0),
+                        )
+                        .changed()
+                    {
+                        changed = true;
+                        do_restart = true;
+                    }
+                    if ui.button("Regenerate").clicked() {
+                        self.settings.server_token = generate_token();
+                        changed = true;
+                        do_restart = true;
+                    }
+                });
+                if ui
+                    .checkbox(
+                        &mut self.settings.server_open_lan,
+                        "Open on LAN (no token — anyone can control)",
+                    )
+                    .changed()
+                {
+                    changed = true;
+                    do_restart = true;
+                }
+                if ui
+                    .checkbox(&mut self.settings.server_read_only, "Web clients read-only")
+                    .changed()
+                {
+                    changed = true;
+                    do_restart = true;
+                }
+                if let Some(srv) = &self.server {
+                    ui.colored_label(ACCENT, format!("● listening on port {}", srv.bound.port()));
+                    if !self.settings.server_open_lan && ui.button("Copy access token").clicked() {
+                        ui.ctx().copy_text(self.settings.server_token.clone());
+                    }
+                }
             });
         self.show_options = open;
+        if do_sync {
+            self.sync_server();
+        } else if do_restart {
+            self.restart_server();
+        }
         if changed {
             if let Err(e) = self.settings.save() {
                 self.status_line = format!("could not save settings: {e}");

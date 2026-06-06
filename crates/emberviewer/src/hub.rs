@@ -10,7 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use ember_net::{ConnError, Connection, Inbound, ProviderWriter};
@@ -96,7 +96,8 @@ impl Subscriber {
         let _ = self.msg_tx.send(HubMsg::Cmd { id: self.id, cmd });
     }
 
-    /// Drain all pending events for this subscriber.
+    /// Drain all pending events for this subscriber (sync; for the egui frame
+    /// loop).
     pub fn drain(&mut self) -> Vec<NetEvent> {
         use broadcast::error::TryRecvError;
         let mut out = Vec::new();
@@ -110,6 +111,75 @@ impl Subscriber {
             }
         }
         out
+    }
+
+    /// Await the next event (async; for the WebSocket server). `None` once the
+    /// connection has ended.
+    pub async fn recv(&mut self) -> Option<Arc<NetEvent>> {
+        use broadcast::error::RecvError;
+        loop {
+            match self.evt_rx.recv().await {
+                Ok(ev) => return Some(ev),
+                Err(RecvError::Lagged(_)) => continue,
+                Err(RecvError::Closed) => return None,
+            }
+        }
+    }
+}
+
+/// A shared registry of live provider connections, keyed by provider id. A
+/// [`Hub`] is created on first open and shut down once the last [`HubLease`]
+/// (desktop session or web client) drops — so the device sees one consumer no
+/// matter how many viewers attach. Cheap to clone (everything is shared).
+#[derive(Clone)]
+pub struct HubRegistry {
+    inner: Arc<Mutex<HashMap<u64, Weak<Hub>>>>,
+    rt: tokio::runtime::Handle,
+    ctx: egui::Context,
+}
+
+impl HubRegistry {
+    pub fn new(rt: tokio::runtime::Handle, ctx: egui::Context) -> Self {
+        HubRegistry {
+            inner: Arc::new(Mutex::new(HashMap::new())),
+            rt,
+            ctx,
+        }
+    }
+
+    /// Attach a viewer to provider `id`, reusing the live connection if one
+    /// exists or spawning it (connecting to `addr`) otherwise.
+    pub fn open(&self, id: u64, addr: String, keepalive: bool) -> HubLease {
+        let mut map = self.inner.lock().unwrap();
+        let hub = match map.get(&id).and_then(Weak::upgrade) {
+            Some(h) => h,
+            None => {
+                let h = Arc::new(Hub::spawn(&self.rt, addr, self.ctx.clone(), keepalive));
+                map.insert(id, Arc::downgrade(&h));
+                h
+            }
+        };
+        let sub = hub.subscribe();
+        HubLease { _hub: hub, sub }
+    }
+}
+
+/// A viewer's lease on a shared [`Hub`]: keeps the connection alive while held,
+/// and carries this viewer's [`Subscriber`].
+pub struct HubLease {
+    _hub: Arc<Hub>,
+    sub: Subscriber,
+}
+
+impl HubLease {
+    pub fn send(&self, cmd: NetCommand) {
+        self.sub.send(cmd);
+    }
+    pub fn drain(&mut self) -> Vec<NetEvent> {
+        self.sub.drain()
+    }
+    pub async fn recv(&mut self) -> Option<Arc<NetEvent>> {
+        self.sub.recv().await
     }
 }
 
