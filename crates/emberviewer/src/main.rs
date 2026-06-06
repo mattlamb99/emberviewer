@@ -9,6 +9,9 @@ mod hub;
 mod model;
 mod net;
 mod settings;
+// Used by server mode and the wasm client (wired up in later phases).
+#[allow(dead_code)]
+mod wire;
 
 fn main() -> eframe::Result {
     tracing_subscriber::fmt()

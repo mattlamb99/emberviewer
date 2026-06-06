@@ -1,0 +1,11 @@
+[package]
+name = "ember-web-proto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "WebSocket wire vocabulary shared by the emberviewer server and its browser client."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
