@@ -59,12 +59,29 @@ struct AddDialog {
     editing: Option<Id>,
 }
 
-/// An action requested from the sidebar (often via a right-click menu).
+/// Drag-and-drop payload: the id of the node being dragged.
+#[derive(Clone)]
+struct DragPayload(Id);
+
+/// An action requested from the sidebar (right-click menu or drag-drop).
 enum SidebarAction {
     Open(Id),
     Disconnect(Id),
-    Edit(Id),
+    EditProvider(Id),
     Remove(Id),
+    AddFolder(Id),
+    RenameFolder(Id),
+    Move { node: Id, into: Id },
+}
+
+/// Draft state for the create/rename folder dialog.
+#[derive(Default)]
+struct FolderDialog {
+    open: bool,
+    name: String,
+    parent: Id,
+    /// `Some(id)` when renaming an existing folder.
+    rename: Option<Id>,
 }
 
 /// Settings that affect how the provider tree is rendered, bundled so they can
@@ -84,6 +101,7 @@ pub struct App {
     /// Currently selected provider (drives the main panel).
     active: Option<Id>,
     add: AddDialog,
+    folder_dialog: FolderDialog,
     status_line: String,
     /// Filter text for the providers sidebar.
     provider_filter: String,
@@ -106,6 +124,7 @@ impl App {
             sessions: HashMap::new(),
             active: None,
             add: AddDialog::default(),
+            folder_dialog: FolderDialog::default(),
             status_line: String::new(),
             provider_filter: String::new(),
             settings,
@@ -256,6 +275,7 @@ impl eframe::App for App {
 
         self.sidebar(ui, &ctx);
         self.add_dialog(&ctx);
+        self.folder_dialog(&ctx);
         self.options_window(&ctx);
         self.tabs(ui);
 
@@ -304,6 +324,13 @@ impl App {
                                 ..Default::default()
                             };
                         }
+                        if ui.button("📁+").on_hover_text("Add folder").clicked() {
+                            self.folder_dialog = FolderDialog {
+                                open: true,
+                                parent: AddressBook::ROOT_ID,
+                                ..Default::default()
+                            };
+                        }
                     });
                 });
                 ui.horizontal(|ui| {
@@ -332,15 +359,59 @@ impl App {
                             &filter,
                         );
                     }
+                    ui.add_space(6.0);
+                    // Drop zone to move a node out to the top level.
+                    let (_, payload) = ui.dnd_drop_zone::<DragPayload, ()>(
+                        egui::Frame::default().inner_margin(4.0),
+                        |ui| {
+                            ui.weak("▸ top level (drop here)");
+                            ui.allocate_space(egui::vec2(ui.available_width(), 0.0));
+                        },
+                    );
+                    if let Some(p) = payload {
+                        action = Some(SidebarAction::Move {
+                            node: p.0,
+                            into: AddressBook::ROOT_ID,
+                        });
+                    }
                 });
-                match action {
-                    Some(SidebarAction::Open(id)) => self.open_provider(id, ctx),
-                    Some(SidebarAction::Disconnect(id)) => self.disconnect(id),
-                    Some(SidebarAction::Edit(id)) => self.open_edit_dialog(id),
-                    Some(SidebarAction::Remove(id)) => self.remove_provider(id),
-                    None => {}
-                }
+                self.dispatch_sidebar(action, ctx);
             });
+    }
+
+    fn dispatch_sidebar(&mut self, action: Option<SidebarAction>, ctx: &egui::Context) {
+        match action {
+            Some(SidebarAction::Open(id)) => self.open_provider(id, ctx),
+            Some(SidebarAction::Disconnect(id)) => self.disconnect(id),
+            Some(SidebarAction::EditProvider(id)) => self.open_edit_dialog(id),
+            Some(SidebarAction::Remove(id)) => self.remove_node(id),
+            Some(SidebarAction::AddFolder(parent)) => {
+                self.folder_dialog = FolderDialog {
+                    open: true,
+                    parent,
+                    ..Default::default()
+                };
+            }
+            Some(SidebarAction::RenameFolder(id)) => {
+                let name = self
+                    .book
+                    .find(id)
+                    .map(|n| n.name().to_string())
+                    .unwrap_or_default();
+                self.folder_dialog = FolderDialog {
+                    open: true,
+                    name,
+                    rename: Some(id),
+                    ..Default::default()
+                };
+            }
+            Some(SidebarAction::Move { node, into }) => {
+                if self.book.move_node(node, into) {
+                    let _ = self.book.save();
+                }
+            }
+            None => {}
+        }
     }
 
     /// Render one address-book node (folder or provider) recursively.
@@ -364,9 +435,34 @@ impl App {
                 if !filter.is_empty() {
                     header = header.open(Some(true));
                 }
-                header.show(ui, |ui| {
+                let resp = header.show(ui, |ui| {
                     for child in &folder.children {
                         Self::sidebar_node(ui, child, sessions, active, action, filter);
+                    }
+                });
+                let hr = resp.header_response;
+                // Drop onto a folder → move the dragged node into it.
+                if let Some(p) = hr.dnd_release_payload::<DragPayload>() {
+                    if p.0 != folder.id {
+                        *action = Some(SidebarAction::Move {
+                            node: p.0,
+                            into: folder.id,
+                        });
+                    }
+                }
+                hr.context_menu(|ui| {
+                    if ui.button("Add subfolder…").clicked() {
+                        *action = Some(SidebarAction::AddFolder(folder.id));
+                        ui.close();
+                    }
+                    if ui.button("Rename…").clicked() {
+                        *action = Some(SidebarAction::RenameFolder(folder.id));
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui.button("Remove folder").clicked() {
+                        *action = Some(SidebarAction::Remove(folder.id));
+                        ui.close();
                     }
                 });
             }
@@ -377,34 +473,42 @@ impl App {
                 let connected = sessions.contains_key(&p.id);
                 let status = sessions.get(&p.id).map(|s| &s.status);
                 let selected = active == Some(p.id);
-                ui.horizontal(|ui| {
-                    paint_dot(ui, status_color(status));
-                    let resp = ui
-                        .selectable_label(selected, &p.name)
-                        .on_hover_text(format!("{}:{}", p.host, p.port));
-                    if resp.clicked() {
+                // The whole row is a drag source.
+                let drag = ui.dnd_drag_source(
+                    egui::Id::new(("dragprov", p.id)),
+                    DragPayload(p.id),
+                    |ui| {
+                        ui.horizontal(|ui| {
+                            paint_dot(ui, status_color(status));
+                            ui.selectable_label(selected, &p.name)
+                                .on_hover_text(format!("{}:{}", p.host, p.port))
+                        })
+                        .inner
+                    },
+                );
+                let label_resp = drag.inner;
+                if label_resp.clicked() {
+                    *action = Some(SidebarAction::Open(p.id));
+                }
+                label_resp.context_menu(|ui| {
+                    if connected {
+                        if ui.button("Disconnect").clicked() {
+                            *action = Some(SidebarAction::Disconnect(p.id));
+                            ui.close();
+                        }
+                    } else if ui.button("Connect").clicked() {
                         *action = Some(SidebarAction::Open(p.id));
+                        ui.close();
                     }
-                    resp.context_menu(|ui| {
-                        if connected {
-                            if ui.button("Disconnect").clicked() {
-                                *action = Some(SidebarAction::Disconnect(p.id));
-                                ui.close();
-                            }
-                        } else if ui.button("Connect").clicked() {
-                            *action = Some(SidebarAction::Open(p.id));
-                            ui.close();
-                        }
-                        if ui.button("Edit…").clicked() {
-                            *action = Some(SidebarAction::Edit(p.id));
-                            ui.close();
-                        }
-                        ui.separator();
-                        if ui.button("Remove").clicked() {
-                            *action = Some(SidebarAction::Remove(p.id));
-                            ui.close();
-                        }
-                    });
+                    if ui.button("Edit…").clicked() {
+                        *action = Some(SidebarAction::EditProvider(p.id));
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui.button("Remove").clicked() {
+                        *action = Some(SidebarAction::Remove(p.id));
+                        ui.close();
+                    }
                 });
             }
         }
@@ -424,12 +528,67 @@ impl App {
         }
     }
 
-    /// Remove a provider from the address book (disconnecting first if open).
-    fn remove_provider(&mut self, id: Id) {
-        self.disconnect(id);
-        self.book.remove(id);
-        if let Err(e) = self.book.save() {
-            self.status_line = format!("could not save address book: {e}");
+    /// Remove a provider or folder; disconnect any providers it contained.
+    fn remove_node(&mut self, id: Id) {
+        if let Some(node) = self.book.remove(id) {
+            let mut ids = Vec::new();
+            collect_provider_ids(&node, &mut ids);
+            for pid in ids {
+                self.disconnect(pid);
+            }
+            if let Err(e) = self.book.save() {
+                self.status_line = format!("could not save address book: {e}");
+            }
+        }
+    }
+
+    /// Create or rename a folder.
+    fn folder_dialog(&mut self, ctx: &egui::Context) {
+        if !self.folder_dialog.open {
+            return;
+        }
+        let mut open = self.folder_dialog.open;
+        let renaming = self.folder_dialog.rename;
+        let title = if renaming.is_some() {
+            "Rename folder"
+        } else {
+            "New folder"
+        };
+        egui::Window::new(title)
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut self.folder_dialog.name)
+                        .hint_text("folder name"),
+                );
+                resp.request_focus();
+                let submit = resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                ui.separator();
+                ui.horizontal(|ui| {
+                    let valid = !self.folder_dialog.name.trim().is_empty();
+                    if (ui.add_enabled(valid, egui::Button::new("OK")).clicked() || submit) && valid
+                    {
+                        let name = self.folder_dialog.name.trim().to_string();
+                        match renaming {
+                            Some(id) => {
+                                self.book.rename(id, name);
+                            }
+                            None => {
+                                self.book.add_folder(self.folder_dialog.parent, name);
+                            }
+                        }
+                        let _ = self.book.save();
+                        self.folder_dialog.open = false;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.folder_dialog.open = false;
+                    }
+                });
+            });
+        if !open {
+            self.folder_dialog.open = false;
         }
     }
 
@@ -914,6 +1073,18 @@ fn editor(
 fn paint_dot(ui: &mut egui::Ui, color: egui::Color32) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, ui.spacing().interact_size.y), egui::Sense::hover());
     ui.painter().circle_filled(rect.center(), 4.5, color);
+}
+
+/// Collect every provider id within a node subtree.
+fn collect_provider_ids(node: &Node, out: &mut Vec<Id>) {
+    match node {
+        Node::Provider(p) => out.push(p.id),
+        Node::Folder(f) => {
+            for child in &f.children {
+                collect_provider_ids(child, out);
+            }
+        }
+    }
 }
 
 /// Whether a folder matches the sidebar filter (by its own name or any descendant).
