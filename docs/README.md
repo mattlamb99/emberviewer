@@ -24,7 +24,7 @@ site works fully offline and ships no trackers.
 3. Under **Build and deployment → Source**, choose **"Deploy from a branch"**.
 4. Set **Branch** to **`main`** and the folder to **`/docs`**, then click **Save**.
 5. Wait a minute for the first deploy. The site appears at
-   `https://<owner>.github.io/<repo>/` (for the placeholder repo, `https://mattlamb99.github.io/emberviewer/`).
+   `https://mattlamb99.github.io/emberviewer/`.
 
 ## Custom domain (optional)
 
@@ -38,9 +38,5 @@ GitHub Pages can serve from your own domain. To use one:
 
 No `CNAME` file is included here — add one only if you set up a custom domain.
 
-## Updating placeholders
-
-The links currently point at the placeholder repository **`mattlamb99/emberviewer`**. Search and
-replace `mattlamb99/emberviewer` (and the Pages URL `mattlamb99.github.io/emberviewer`) with the real
-owner/repo once it is known. The **Download** button and Releases links target
-`https://github.com/<owner>/<repo>/releases`.
+All links point at `mattlamb99/emberviewer`; the **Download** button and Releases links target
+`https://github.com/mattlamb99/emberviewer/releases`.
