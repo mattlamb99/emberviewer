@@ -1282,7 +1282,7 @@ fn render_entry(
                     // getDirectory on the matrix itself (not on its parent) — fetch
                     // it once when the grid first shows.
                     if session.label_fetch.insert(entry.path.clone()) {
-                        commands.push(NetCommand::GetDirectory(entry.path.clone()));
+                        commands.push(NetCommand::GetMatrixDirectory(entry.path.clone()));
                     }
                     // Eagerly fetch each label sub-tree: basePath → targets/sources
                     // → string params (number = signal id, value = name).
@@ -1310,7 +1310,11 @@ fn render_entry(
             if let Some(e) = session.tree.entries.get_mut(path) {
                 e.requested = true;
             }
-            commands.push(NetCommand::GetDirectory(path.to_vec()));
+            if entry.matrix.is_some() {
+                commands.push(NetCommand::GetMatrixDirectory(path.to_vec()));
+            } else {
+                commands.push(NetCommand::GetDirectory(path.to_vec()));
+            }
         }
     } else {
         // A leaf parameter is on screen → eligible for a live subscription.
@@ -1904,9 +1908,16 @@ fn render_matrix(
                 resp
             };
 
-            // Resizable column-header height (for rotated names), persisted.
+            // Resizable column-header height. Default tall enough to show rotated
+            // names when the columns have labels (else compact). Only the user's
+            // drag is persisted — otherwise the height-18 captured before the
+            // labels arrive would stick and the names would never rotate in.
             let hh_id = egui::Id::new(("matrix_header_h", &path));
-            let mut header_h = ui.ctx().data_mut(|d| d.get_persisted::<f32>(hh_id)).unwrap_or(18.0);
+            let default_hh = if col_labels.is_empty() { 18.0 } else { 76.0 };
+            let mut header_h = ui
+                .ctx()
+                .data_mut(|d| d.get_persisted::<f32>(hh_id))
+                .unwrap_or(default_hh);
 
             ui.horizontal(|ui| {
                 // Corner doubles as a 2D resize handle: x → label width, y → header height.
@@ -1922,6 +1933,10 @@ fn render_matrix(
                 if cresp.dragged() {
                     label_w = (label_w + cresp.drag_delta().x).clamp(24.0, 480.0);
                     header_h = (header_h + cresp.drag_delta().y).clamp(18.0, 240.0);
+                    ui.ctx().data_mut(|d| {
+                        d.insert_persisted(lw_id, label_w);
+                        d.insert_persisted(hh_id, header_h);
+                    });
                 }
                 cresp
                     .on_hover_cursor(egui::CursorIcon::ResizeNwSe)
@@ -1997,10 +2012,6 @@ fn render_matrix(
                     }
                 });
             }
-            ui.ctx().data_mut(|d| {
-                d.insert_persisted(lw_id, label_w);
-                d.insert_persisted(hh_id, header_h);
-            });
         });
         });
 }

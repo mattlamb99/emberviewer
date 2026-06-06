@@ -15,6 +15,9 @@ use tokio::sync::mpsc as tokio_mpsc;
 pub enum NetCommand {
     /// Request the directory (children) of the node at this path (empty = root).
     GetDirectory(Vec<u32>),
+    /// Request a matrix's directory, addressed as a matrix so the provider
+    /// returns its targets/sources/connections (Lawo needs this addressing).
+    GetMatrixDirectory(Vec<u32>),
     /// Set the parameter at this path to a new value.
     SetValue(Vec<u32>, Value),
     /// Subscribe to value changes of the parameter at this path.
@@ -181,6 +184,9 @@ async fn run_session(
             cmd = cmd_rx.recv() => {
                 let result = match cmd {
                     Some(NetCommand::GetDirectory(path)) => writer.get_directory(&path).await,
+                    Some(NetCommand::GetMatrixDirectory(path)) => {
+                        writer.get_matrix_directory(&path).await
+                    }
                     Some(NetCommand::SetValue(path, value)) => writer.set_value(&path, value).await,
                     Some(NetCommand::Subscribe(path)) => writer.subscribe(&path).await,
                     Some(NetCommand::Unsubscribe(path)) => writer.unsubscribe(&path).await,

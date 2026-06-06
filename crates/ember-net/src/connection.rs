@@ -239,6 +239,11 @@ impl ProviderWriter {
         self.send(&Root::get_directory_at(path)).await
     }
 
+    /// Request a matrix's directory, addressed as a matrix (returns connections).
+    pub async fn get_matrix_directory(&mut self, path: &[u32]) -> Result<(), ConnError> {
+        self.send(&Root::get_matrix_directory_at(path)).await
+    }
+
     /// Set the parameter at `path` to `value`.
     pub async fn set_value(&mut self, path: &[u32], value: Value) -> Result<(), ConnError> {
         self.send(&Root::set_value_at(path, value)).await

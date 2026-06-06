@@ -932,6 +932,24 @@ impl Root {
         Root::from_element(RootElement::QualifiedNode(qn))
     }
 
+    /// Request a matrix's directory, addressing the path as a `QualifiedMatrix`.
+    ///
+    /// Lawo providers return a matrix's targets/sources/connections only when the
+    /// `getDirectory` is addressed at the matrix element itself; addressing the
+    /// same path as a plain node yields contents but no connection list.
+    pub fn get_matrix_directory_at(path: &[u32]) -> Self {
+        let command = Element::Command(Command::get_directory(Some(field_flags::ALL)));
+        let qm = QualifiedMatrix {
+            path: RelativeOid::from_arcs(path),
+            contents: None,
+            children: Some(ElementCollection(vec![ElementEntry(command)])),
+            targets: None,
+            sources: None,
+            connections: None,
+        };
+        Root::from_element(RootElement::QualifiedMatrix(qm))
+    }
+
     /// Subscribe to value changes of the parameter at `path`.
     pub fn subscribe_at(path: &[u32]) -> Self {
         Root::command_on_parameter(path, command_type::SUBSCRIBE)
