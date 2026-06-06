@@ -55,26 +55,33 @@ jobs:
           if-no-files-found: error
 
   release:
-    name: release (${{ matrix.os }})
+    name: release (${{ matrix.target }})
     needs: web-bundle
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Build the Linux binary on the oldest supported runner (glibc 2.35) so
-          # it also runs on older-but-current distros (Ubuntu 22.04, Debian 12).
-          # ubuntu-latest is 24.04 (glibc 2.39), which won't run on glibc < 2.39.
+          # Linux on the oldest runner (glibc 2.35) so the binary also runs on
+          # Ubuntu 22.04 / Debian 12 and newer; ubuntu-latest (24.04) needs 2.39.
           - os: ubuntu-22.04
             target_os: linux
-          # macos-latest is Apple Silicon (arm64); macos-13 is the Intel (x86_64)
-          # runner — a native build on each, named by `uname -m`.
+            target: x86_64-unknown-linux-gnu
+            arch: x86_64
+          # macOS arm64 native; Intel cross-compiled on the same Apple-Silicon
+          # runner, since GitHub's Intel (macos-13) runners are scarce/unreliable.
           - os: macos-latest
             target_os: macos
-          - os: macos-13
+            target: aarch64-apple-darwin
+            arch: arm64
+          - os: macos-latest
             target_os: macos
+            target: x86_64-apple-darwin
+            arch: x86_64
           - os: windows-latest
             target_os: windows
+            target: x86_64-pc-windows-msvc
+            arch: x86_64
 
     steps:
       - name: Checkout
@@ -95,6 +102,8 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       # No rust-cache on the release jobs: a shared Linux cache leaks glibc-2.39
       # proc-macro .so files from the ubuntu-latest builds into the ubuntu-22.04
@@ -106,27 +115,22 @@ jobs:
           path: crates/emberviewer/web-dist/
 
       - name: Build release binary
-        run: cargo build --release --package emberviewer
-
-      - name: Determine arch
-        id: arch
-        shell: bash
-        run: echo "arch=$(uname -m)" >> "$GITHUB_OUTPUT"
+        run: cargo build --release --package emberviewer --target ${{ matrix.target }}
 
       - name: Package (Linux / macOS)
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          ASSET="${BIN_NAME}-${{ matrix.target_os }}-${{ steps.arch.outputs.arch }}.tar.gz"
-          tar -czvf "$ASSET" -C target/release "$BIN_NAME"
+          ASSET="${BIN_NAME}-${{ matrix.target_os }}-${{ matrix.arch }}.tar.gz"
+          tar -czvf "$ASSET" -C "target/${{ matrix.target }}/release" "$BIN_NAME"
           echo "ASSET=$ASSET" >> "$GITHUB_ENV"
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          ASSET="${BIN_NAME}-${{ matrix.target_os }}-${{ steps.arch.outputs.arch }}.zip"
-          7z a "$ASSET" "./target/release/${BIN_NAME}.exe"
+          ASSET="${BIN_NAME}-${{ matrix.target_os }}-${{ matrix.arch }}.zip"
+          7z a "$ASSET" "./target/${{ matrix.target }}/release/${BIN_NAME}.exe"
           echo "ASSET=$ASSET" >> "$GITHUB_ENV"
 
       - name: Upload to GitHub Release
