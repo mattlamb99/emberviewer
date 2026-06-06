@@ -1393,9 +1393,17 @@ fn render_matrix(
         );
     };
 
-    egui::ScrollArea::both()
+    // A resizable viewport: drag the bottom-right handle to fit more of a large
+    // matrix on screen. The scroll area inside fills it.
+    let avail_w = ui.available_width();
+    egui::Resize::default()
+        .id_salt(("mresize", &path))
+        .default_size([avail_w.min(720.0), 360.0])
+        .min_height(80.0)
+        .show(ui, |ui| {
+        egui::ScrollArea::both()
         .id_salt(("mscroll", &path))
-        .max_height(420.0)
+        .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(1.0, 1.0);
             // Header row: corner + column indices.
@@ -1445,6 +1453,7 @@ fn render_matrix(
                     }
                 });
             }
+        });
         });
 }
 
