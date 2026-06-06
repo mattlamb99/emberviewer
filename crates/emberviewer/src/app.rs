@@ -1558,26 +1558,21 @@ fn display_value(entry: &crate::model::Entry, v: &Value) -> String {
 /// request the base node, then its `targets`/`sources` children (whose
 /// getDirectory returns the label string params). Deduped via `label_fetch`.
 fn fetch_label_subtree(session: &mut Session, base: &[u32], commands: &mut Vec<NetCommand>) {
-    // Request the base node itself once.
-    if session.tree.get(base).is_none() {
-        if session.label_fetch.insert(base.to_vec()) {
-            commands.push(NetCommand::GetDirectory(base.to_vec()));
-        }
-        return;
+    // Always getDirectory the base once — it usually exists as a stub (created by
+    // the matrix's parent fetch) with no children loaded yet, so checking
+    // is_none() would never fetch its targets/sources.
+    if session.label_fetch.insert(base.to_vec()) {
+        commands.push(NetCommand::GetDirectory(base.to_vec()));
     }
-    // Request each child node (targets/sources) once.
+    // Once the base's children (targets/sources) arrive, fetch them too (their
+    // getDirectory returns the label string params).
     let children = session
         .tree
         .get(base)
         .map(|e| e.children.clone())
         .unwrap_or_default();
     for child in children {
-        let is_node = session
-            .tree
-            .get(&child)
-            .map(|e| e.kind.is_expandable())
-            .unwrap_or(false);
-        if is_node && session.label_fetch.insert(child.clone()) {
+        if session.label_fetch.insert(child.clone()) {
             commands.push(NetCommand::GetDirectory(child));
         }
     }
@@ -1819,11 +1814,22 @@ fn render_matrix(
             .weak(),
     );
 
+    // Signal sets, augmented with any signals referenced by connections so a
+    // crosspoint always has a visible cell even if targets/sources were sparse.
+    let mut target_set: std::collections::BTreeSet<u32> = m.targets.iter().copied().collect();
+    let mut source_set: std::collections::BTreeSet<u32> = m.sources.iter().copied().collect();
+    for (t, srcs) in &m.connections {
+        target_set.insert(*t);
+        source_set.extend(srcs.iter().copied());
+    }
+    let targets_v: Vec<u32> = target_set.into_iter().collect();
+    let sources_v: Vec<u32> = source_set.into_iter().collect();
+
     // Columns/rows iterate the actual signal numbers (sparse on real devices).
     let (col_signals, row_signals): (&[u32], &[u32]) = if opts.matrix_targets_on_top {
-        (&m.targets, &m.sources)
+        (&targets_v, &sources_v)
     } else {
-        (&m.sources, &m.targets)
+        (&sources_v, &targets_v)
     };
     let (col_labels, row_labels) = if opts.matrix_targets_on_top {
         (&m.target_labels, &m.source_labels)
@@ -1842,6 +1848,7 @@ fn render_matrix(
     let accent = ui.visuals().selection.bg_fill;
 
     const CELL: f32 = 18.0;
+    #[allow(unused)]
     let draw_label = |ui: &mut egui::Ui, text: &str, strong: bool| -> egui::Response {
         let (rect, resp) = ui.allocate_exact_size(egui::vec2(CELL, CELL), egui::Sense::hover());
         ui.painter().text(
@@ -1897,26 +1904,57 @@ fn render_matrix(
                 resp
             };
 
+            // Resizable column-header height (for rotated names), persisted.
+            let hh_id = egui::Id::new(("matrix_header_h", &path));
+            let mut header_h = ui.ctx().data_mut(|d| d.get_persisted::<f32>(hh_id)).unwrap_or(18.0);
+
             ui.horizontal(|ui| {
-                // Corner cell doubles as a drag handle to resize the label column.
+                // Corner doubles as a 2D resize handle: x → label width, y → header height.
                 let (crect, cresp) =
-                    ui.allocate_exact_size(egui::vec2(label_w, CELL), egui::Sense::drag());
+                    ui.allocate_exact_size(egui::vec2(label_w, header_h), egui::Sense::drag());
                 ui.painter().text(
-                    crect.right_center() - egui::vec2(2.0, 0.0),
-                    egui::Align2::RIGHT_CENTER,
+                    crect.right_bottom() - egui::vec2(2.0, 1.0),
+                    egui::Align2::RIGHT_BOTTOM,
                     format!("{row_kind}\\{col_kind}"),
                     egui::FontId::proportional(9.0),
                     ui.visuals().weak_text_color(),
                 );
                 if cresp.dragged() {
                     label_w = (label_w + cresp.drag_delta().x).clamp(24.0, 480.0);
+                    header_h = (header_h + cresp.drag_delta().y).clamp(18.0, 240.0);
                 }
                 cresp
-                    .on_hover_cursor(egui::CursorIcon::ResizeHorizontal)
-                    .on_hover_text("drag to resize the label column");
+                    .on_hover_cursor(egui::CursorIcon::ResizeNwSe)
+                    .on_hover_text("drag to resize the label column / header height");
                 for &c in col_signals {
-                    draw_label(ui, &c.to_string(), false)
-                        .on_hover_text(head_tip(col_labels, col_kind, c));
+                    let (rect, resp) =
+                        ui.allocate_exact_size(egui::vec2(CELL, header_h), egui::Sense::hover());
+                    let name = col_labels.get(&c);
+                    if header_h > 24.0 && name.is_some() {
+                        // Rotated column name reading bottom-to-top.
+                        let text = format!("{c} {}", name.unwrap());
+                        let galley = ui.painter().layout_no_wrap(
+                            text,
+                            egui::FontId::proportional(10.0),
+                            ui.visuals().text_color(),
+                        );
+                        let mut shape = egui::epaint::TextShape::new(
+                            egui::pos2(rect.center().x - galley.size().y / 2.0, rect.bottom() - 2.0),
+                            galley,
+                            ui.visuals().text_color(),
+                        );
+                        shape.angle = -std::f32::consts::FRAC_PI_2;
+                        ui.painter_at(rect).add(shape);
+                    } else {
+                        ui.painter_at(rect).text(
+                            rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            c.to_string(),
+                            egui::FontId::proportional(9.0),
+                            ui.visuals().weak_text_color(),
+                        );
+                    }
+                    resp.on_hover_text(head_tip(col_labels, col_kind, c));
                 }
             });
             for (ri, &r) in row_signals.iter().enumerate() {
@@ -1959,7 +1997,10 @@ fn render_matrix(
                     }
                 });
             }
-            ui.ctx().data_mut(|d| d.insert_persisted(lw_id, label_w));
+            ui.ctx().data_mut(|d| {
+                d.insert_persisted(lw_id, label_w);
+                d.insert_persisted(hh_id, header_h);
+            });
         });
         });
 }
