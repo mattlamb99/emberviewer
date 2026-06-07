@@ -1,5 +1,7 @@
 //! Async TCP transport for Ember+: S101 framing over a [`tokio`] socket.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use ember_proto::glow::{self, Root, Value};
@@ -21,6 +23,44 @@ pub enum ConnError {
     Encode(String),
     #[error("connection closed by peer")]
     Closed,
+}
+
+/// Cumulative byte and S101-frame counters for one connection, shared between the
+/// read/write halves and the UI. `rx` counts what the device sends us, `tx` what we
+/// send the device. Bytes are raw socket bytes (including S101 framing and
+/// keep-alives); frames are whole S101 messages.
+#[derive(Debug, Default)]
+pub struct Traffic {
+    rx_bytes: AtomicU64,
+    tx_bytes: AtomicU64,
+    rx_frames: AtomicU64,
+    tx_frames: AtomicU64,
+}
+
+impl Traffic {
+    fn record_tx(&self, bytes: usize) {
+        self.tx_bytes.fetch_add(bytes as u64, Ordering::Relaxed);
+        self.tx_frames.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// A point-in-time copy of the cumulative totals.
+    pub fn snapshot(&self) -> TrafficSnapshot {
+        TrafficSnapshot {
+            rx_bytes: self.rx_bytes.load(Ordering::Relaxed),
+            tx_bytes: self.tx_bytes.load(Ordering::Relaxed),
+            rx_frames: self.rx_frames.load(Ordering::Relaxed),
+            tx_frames: self.tx_frames.load(Ordering::Relaxed),
+        }
+    }
+}
+
+/// A snapshot of [`Traffic`]'s cumulative counters (bytes/frames each way).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TrafficSnapshot {
+    pub rx_bytes: u64,
+    pub tx_bytes: u64,
+    pub rx_frames: u64,
+    pub tx_frames: u64,
 }
 
 /// A live connection to an Ember+ provider.
@@ -117,14 +157,21 @@ impl Connection {
     /// Split into independent read and write halves so a caller can `select!`
     /// over reading and writing concurrently (as the GUI's connection actor does).
     pub fn into_split(self) -> (ProviderReader, ProviderWriter) {
+        self.into_split_with(Arc::new(Traffic::default()))
+    }
+
+    /// Like [`into_split`](Self::into_split) but sharing `traffic`, so the caller
+    /// (the GUI) can read byte/frame totals — and persist them across reconnects.
+    pub fn into_split_with(self, traffic: Arc<Traffic>) -> (ProviderReader, ProviderWriter) {
         let (read, write) = self.stream.into_split();
         (
             ProviderReader {
                 read,
                 decoder: self.decoder,
                 read_buf: self.read_buf,
+                traffic: traffic.clone(),
             },
-            ProviderWriter { write },
+            ProviderWriter { write, traffic },
         )
     }
 }
@@ -174,6 +221,7 @@ pub struct ProviderReader {
     read: OwnedReadHalf,
     decoder: FrameDecoder,
     read_buf: Vec<u8>,
+    traffic: Arc<Traffic>,
 }
 
 impl ProviderReader {
@@ -184,7 +232,9 @@ impl ProviderReader {
             if n == 0 {
                 return Ok(None);
             }
+            self.traffic.rx_bytes.fetch_add(n as u64, Ordering::Relaxed);
             for item in self.decoder.push(&self.read_buf[..n]) {
+                self.traffic.rx_frames.fetch_add(1, Ordering::Relaxed);
                 match item {
                     Ok(Incoming::EmberPayload(payload)) => {
                         if dump_frames() {
@@ -226,6 +276,7 @@ impl ProviderReader {
 /// Write half of a split [`Connection`].
 pub struct ProviderWriter {
     write: OwnedWriteHalf,
+    traffic: Arc<Traffic>,
 }
 
 impl ProviderWriter {
@@ -235,6 +286,7 @@ impl ProviderWriter {
         let frames = s101::encode_ember(&payload);
         self.write.write_all(&frames).await?;
         self.write.flush().await?;
+        self.traffic.record_tx(frames.len());
         Ok(())
     }
 
@@ -287,19 +339,19 @@ impl ProviderWriter {
 
     /// Reply to a provider keep-alive request.
     pub async fn keepalive_response(&mut self) -> Result<(), ConnError> {
-        self.write
-            .write_all(&s101::encode_keepalive_response())
-            .await?;
+        let frame = s101::encode_keepalive_response();
+        self.write.write_all(&frame).await?;
         self.write.flush().await?;
+        self.traffic.record_tx(frame.len());
         Ok(())
     }
 
     /// Send a keep-alive request.
     pub async fn keepalive_request(&mut self) -> Result<(), ConnError> {
-        self.write
-            .write_all(&s101::encode_keepalive_request())
-            .await?;
+        let frame = s101::encode_keepalive_request();
+        self.write.write_all(&frame).await?;
         self.write.flush().await?;
+        self.traffic.record_tx(frame.len());
         Ok(())
     }
 }
