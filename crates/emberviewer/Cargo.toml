@@ -34,6 +34,10 @@ rand = "0.8"
 rust-embed = "8"
 if-addrs = "0.13"
 qrcode = { version = "0.14", default-features = false }
+# Native save/open dialogs for address-book import/export. The xdg-portal backend
+# (Linux) talks to the desktop portal over DBus — no GTK build dependency — and is
+# async; Windows/macOS use their built-in backends. We drive it on the tokio runtime.
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal", "pollster"] }
 
 # Wasm browser client only.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
