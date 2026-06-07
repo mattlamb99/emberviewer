@@ -713,6 +713,10 @@ impl App {
                     }
                     ui.add(
                         egui::TextEdit::singleline(&mut self.provider_filter)
+                            // Stable id so focus survives the ✖ button appearing
+                            // once text is entered (which would otherwise shift the
+                            // auto-generated id and drop keyboard focus mid-typing).
+                            .id_salt("provider-filter")
                             .hint_text("🔍 filter")
                             .desired_width(f32::INFINITY),
                     );
@@ -733,20 +737,28 @@ impl App {
                             &filter,
                         );
                     }
-                    ui.add_space(6.0);
-                    // Drop zone to move a node out to the top level.
-                    let (_, payload) = ui.dnd_drop_zone::<DragPayload, ()>(
-                        egui::Frame::default().inner_margin(4.0),
-                        |ui| {
-                            ui.weak("▸ top level (drop here)");
-                            ui.allocate_space(egui::vec2(ui.available_width(), 0.0));
-                        },
-                    );
-                    if let Some(p) = payload {
-                        action = Some(SidebarAction::Move {
-                            node: p.0,
-                            into: AddressBook::ROOT_ID,
+                    // Only while dragging a folder/provider, offer a target to move
+                    // it out to the top level — shown as a highlighted drop area
+                    // rather than always-present text, and hidden otherwise.
+                    if egui::DragAndDrop::has_payload_of_type::<DragPayload>(ui.ctx()) {
+                        ui.add_space(8.0);
+                        let frame = egui::Frame::default()
+                            .inner_margin(8.0)
+                            .corner_radius(6.0)
+                            .stroke(egui::Stroke::new(1.0, ACCENT))
+                            .fill(ACCENT.gamma_multiply(0.10));
+                        let (_, payload) = ui.dnd_drop_zone::<DragPayload, ()>(frame, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.vertical_centered(|ui| {
+                                ui.label(egui::RichText::new("Move to top level").color(ACCENT));
+                            });
                         });
+                        if let Some(p) = payload {
+                            action = Some(SidebarAction::Move {
+                                node: p.0,
+                                into: AddressBook::ROOT_ID,
+                            });
+                        }
                     }
                 });
                 self.dispatch_sidebar(action, ctx);
@@ -1635,10 +1647,11 @@ impl App {
 
         ui.horizontal(|ui| {
             ui.heading(&session.name);
+            // The host:port: readable secondary text (not the very-faint `weak`),
+            // kept subordinate to the heading by colour rather than tiny size.
             ui.label(
-                egui::RichText::new(format!("({})", session.addr))
-                    .weak()
-                    .small(),
+                egui::RichText::new(&session.addr)
+                    .color(ui.visuals().widgets.inactive.fg_stroke.color),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if !session.filter.is_empty() && ui.button("✖").clicked() {
@@ -1646,6 +1659,9 @@ impl App {
                 }
                 ui.add(
                     egui::TextEdit::singleline(&mut session.filter)
+                        // Stable id so focus survives the ✖ button appearing (see
+                        // the provider filter above).
+                        .id_salt("tree-filter")
                         .hint_text("🔍 filter")
                         .desired_width(160.0),
                 );
@@ -1749,87 +1765,92 @@ fn render_entry(
     let eff_online = online && entry.is_online;
 
     if entry.kind.is_expandable() {
-        let is_open = session.open.get(path).copied().unwrap_or(false);
         let id = ui.make_persistent_id(("node", path));
-        let header =
-            egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
-        let next_open = header.is_open();
         let mut heading = egui::RichText::new(node_label(&entry, opts));
         if !eff_online {
             heading = heading.weak().italics();
         }
-        let resp = header
-            .show_header(ui, |ui| {
-                ui.label(heading)
-                    .on_hover_text(if eff_online { "" } else { "offline" })
-                    .context_menu(|ui| context_copy(ui, &entry.path, &entry.identifier));
-            })
-            .body(|ui| {
-                // Matrix grid / function form, when this node is one.
-                if let Some(m) = &entry.matrix {
-                    // The matrix's connections/targets/sources arrive from a
-                    // getDirectory on the matrix itself (not on its parent) — fetch
-                    // it once when the grid first shows.
-                    if session.label_fetch.insert(entry.path.clone()) {
-                        commands.push(NetCommand::GetMatrixDirectory(entry.path.clone()));
-                    }
-                    // Eagerly fetch each label sub-tree: basePath → targets/sources
-                    // → string params (number = signal id, value = name).
-                    let bases = m.label_paths.clone();
-                    for base in &bases {
-                        fetch_label_subtree(session, base, commands);
-                    }
-                    // Eagerly fetch the parameters-location node (gain/name/type
-                    // params) so the Matrix Params subtree populates on open.
-                    if let Some(ploc) = m.params_location.clone() {
-                        fetch_label_subtree(session, &ploc, commands);
-                    }
-                    if let Some((is_target, sig)) = crate::matrix_view::render_matrix(
-                        ui,
-                        &entry,
-                        m,
-                        opts.matrix_targets_on_top,
-                        commands,
-                    ) {
-                        // Open the clicked signal's parameter node (gain/type/…).
-                        let base = if is_target {
-                            m.param_targets_path.clone()
-                        } else {
-                            m.param_sources_path.clone()
-                        };
-                        if let Some(mut node) = base {
-                            node.push(sig);
-                            if session.label_fetch.insert(node.clone()) {
-                                commands.push(NetCommand::GetDirectory(node.clone()));
-                            }
-                            let kind = if is_target { "target" } else { "source" };
-                            session.signal_params = Some((node, format!("{kind} {sig}")));
+        let mut name_clicked = false;
+        let mut header =
+            egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false)
+                .show_header(ui, |ui| {
+                    // Clicking the node name (not just the triangle) toggles it,
+                    // matching the address-book folders.
+                    let label = ui
+                        .add(egui::Label::new(heading).sense(egui::Sense::click()))
+                        .on_hover_text(if eff_online { "" } else { "offline" });
+                    label.context_menu(|ui| context_copy(ui, &entry.path, &entry.identifier));
+                    name_clicked = label.clicked();
+                });
+        if name_clicked {
+            header.toggle();
+        }
+        let next_open = header.is_open();
+        header.body(|ui| {
+            // Matrix grid / function form, when this node is one.
+            if let Some(m) = &entry.matrix {
+                // The matrix's connections/targets/sources arrive from a
+                // getDirectory on the matrix itself (not on its parent) — fetch
+                // it once when the grid first shows.
+                if session.label_fetch.insert(entry.path.clone()) {
+                    commands.push(NetCommand::GetMatrixDirectory(entry.path.clone()));
+                }
+                // Eagerly fetch each label sub-tree: basePath → targets/sources
+                // → string params (number = signal id, value = name).
+                let bases = m.label_paths.clone();
+                for base in &bases {
+                    fetch_label_subtree(session, base, commands);
+                }
+                // Eagerly fetch the parameters-location node (gain/name/type
+                // params) so the Matrix Params subtree populates on open.
+                if let Some(ploc) = m.params_location.clone() {
+                    fetch_label_subtree(session, &ploc, commands);
+                }
+                if let Some((is_target, sig)) = crate::matrix_view::render_matrix(
+                    ui,
+                    &entry,
+                    m,
+                    opts.matrix_targets_on_top,
+                    commands,
+                ) {
+                    // Open the clicked signal's parameter node (gain/type/…).
+                    let base = if is_target {
+                        m.param_targets_path.clone()
+                    } else {
+                        m.param_sources_path.clone()
+                    };
+                    if let Some(mut node) = base {
+                        node.push(sig);
+                        if session.label_fetch.insert(node.clone()) {
+                            commands.push(NetCommand::GetDirectory(node.clone()));
                         }
+                        let kind = if is_target { "target" } else { "source" };
+                        session.signal_params = Some((node, format!("{kind} {sig}")));
                     }
-                } else if let Some(f) = &entry.function {
-                    render_function(
-                        ui,
-                        &entry,
-                        f,
-                        &mut session.func_inputs,
-                        &mut session.invocations,
-                        &mut session.next_invocation_id,
-                        &session.tree.invocation_results,
-                        commands,
-                    );
                 }
-                let children = sorted_paths(&session.tree, &entry.children, opts.order_by);
-                for child in &children {
-                    render_entry(ui, session, child, opts, eff_online, row, commands, visible);
-                }
-                if children.is_empty() && entry.matrix.is_none() && entry.function.is_none() {
-                    ui.weak("…");
-                }
-            });
+            } else if let Some(f) = &entry.function {
+                render_function(
+                    ui,
+                    &entry,
+                    f,
+                    &mut session.func_inputs,
+                    &mut session.invocations,
+                    &mut session.next_invocation_id,
+                    &session.tree.invocation_results,
+                    commands,
+                );
+            }
+            let children = sorted_paths(&session.tree, &entry.children, opts.order_by);
+            for child in &children {
+                render_entry(ui, session, child, opts, eff_online, row, commands, visible);
+            }
+            if children.is_empty() && entry.matrix.is_none() && entry.function.is_none() {
+                ui.weak("…");
+            }
+        });
         // Lazily request children whenever a node is open but not yet fetched.
         // (`requested` is reset on reconnect, so this also drives re-discovery.)
         session.open.insert(path.to_vec(), next_open);
-        let _ = (resp, is_open);
         if next_open && !entry.requested {
             if let Some(e) = session.tree.entries.get_mut(path) {
                 e.requested = true;
