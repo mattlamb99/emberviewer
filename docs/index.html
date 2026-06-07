@@ -25,6 +25,7 @@
       <span class="spacer"></span>
       <a class="navlink hide-sm" href="#server-mode">Server mode</a>
       <a class="navlink hide-sm" href="#features">Features</a>
+      <a class="navlink hide-sm" href="#tested">Tested</a>
       <a class="navlink hide-sm" href="#getting-started">Get started</a>
       <a class="navlink" href="protocol.html">Docs</a>
       <a class="navlink" href="https://github.com/mattlamb99/emberviewer">GitHub</a>
@@ -139,7 +140,6 @@
       <h2>Everything you need to drive a provider</h2>
       <p class="lead">A focused tool that gets out of your way — fast browsing, live values and real control.</p>
 
-      <p class="subhead">Available now</p>
       <div class="feature-grid">
         <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Server mode <span class="pill">New</span></h3><p>Serve the UI to phones and laptops on your LAN — token-protected, with read-only and open-LAN modes. <a href="#server-mode">Learn more</a>.</p></div></div>
         <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Address book</h3><p>Organise providers in folders with drag-and-drop, saved between sessions.</p></div></div>
@@ -147,41 +147,92 @@
         <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Lazy tree browsing</h3><p>Walk the provider tree on demand with <code>getDirectory</code>, expanding only what you open.</p></div></div>
         <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>View &amp; set values</h3><p>Read parameter values and set them, with live subscriptions for changes.</p></div></div>
         <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Boolean controls</h3><p>Dedicated set and pulse controls for boolean parameters.</p></div></div>
-        <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Matrix crosspoints</h3><p>View and toggle crosspoints on a matrix grid.</p></div></div>
+        <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Matrix crosspoints</h3><p>Route a matrix grid with device-resolved source/target labels and a signal-parameters popup.</p></div></div>
         <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Function invocation</h3><p>Call provider functions and inspect their results.</p></div></div>
         <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Multiple connections</h3><p>Several simultaneous provider sessions, each in its own tab.</p></div></div>
         <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Search &amp; filter</h3><p>Filter the tree, copy a node's path, and find what you need fast.</p></div></div>
         <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Reconnect with backoff</h3><p>Automatic reconnection with exponential backoff when a link drops.</p></div></div>
         <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Change logging</h3><p>A running log of parameter changes for monitoring and debugging.</p></div></div>
-        <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Options</h3><p>Startup mode, child ordering, descriptions, keep-alive interval and more.</p></div></div>
+        <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Streams &amp; meters</h3><p>High-rate <code>StreamFormat</code>-aware decode driving live vertical meters, with pop-out windows.</p></div></div>
+        <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Enum maps &amp; sliders</h3><p>Friendly enum labels and slider controls that honour each parameter's min/max and display factor.</p></div></div>
+        <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>mDNS discovery</h3><p>Automatic discovery of providers on the local network (<code>_ember._tcp</code>).</p></div></div>
+        <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Online / offline state</h3><p>Honours <code>isOnline</code> so disappearing nodes grey out instead of vanishing.</p></div></div>
+        <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Safety &amp; traffic</h3><p>An opt-in lock guards against accidental edits, and a TX/RX counter shows live traffic toward the device.</p></div></div>
       </div>
+    </div>
+  </section>
 
-      <p class="subhead">In progress</p>
-      <div class="feature-grid">
-        <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="2.5" fill="currentColor"/></svg></span><div><h3>Online / offline state</h3><p>Surfacing <code>isOnline</code> so disappearing nodes are handled gracefully.</p></div></div>
-        <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="2.5" fill="currentColor"/></svg></span><div><h3>Enum maps &amp; sliders</h3><p>Friendly enum labels and slider controls for ranged parameters.</p></div></div>
-        <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="2.5" fill="currentColor"/></svg></span><div><h3>Matrix labels</h3><p>Named source/target labels on crosspoint grids.</p></div></div>
-        <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="2.5" fill="currentColor"/></svg></span><div><h3>Streams &amp; meters</h3><p>High-rate streams for live meters and telemetry.</p></div></div>
-        <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="2.5" fill="currentColor"/></svg></span><div><h3>mDNS discovery</h3><p>Automatic discovery of providers on the local network.</p></div></div>
-      </div>
+  <!-- ===================== Tested against real gear ===================== -->
+  <section id="tested" class="alt">
+    <div class="wrap">
+      <p class="eyebrow">Proven in the wild</p>
+      <h2>Tested against real broadcast gear</h2>
+      <p class="lead">
+        emberviewer is exercised against a broad range of production Ember+ providers — consoles,
+        routers, processors and software stacks from across the industry — not just a reference
+        implementation.
+      </p>
+      <ul class="devices">
+        <li class="device">Lawo Power Core</li>
+        <li class="device">Lawo mc²36</li>
+        <li class="device">Lawo VSM</li>
+        <li class="device">Lawo Virtual Patch Bay</li>
+        <li class="device">Lawo vPro8</li>
+        <li class="device">Lawo Gadget Server</li>
+        <li class="device">Lawo DMS</li>
+        <li class="device">Riedel MicroN</li>
+        <li class="device">Arkona AT300</li>
+        <li class="device">DirectOut Maven</li>
+        <li class="device">2wcom RF10e</li>
+        <li class="device">Tieline Gateway</li>
+        <li class="device">node-emberplus</li>
+      </ul>
+      <p class="note-tested">
+        Run it against something we haven't listed? <a href="https://github.com/mattlamb99/emberviewer/issues">Let us know</a> — interop reports are welcome.
+      </p>
     </div>
   </section>
 
   <!-- ===================== Screenshots ===================== -->
-  <section id="screenshots" class="alt">
+  <section id="screenshots">
     <div class="wrap">
       <p class="eyebrow">A look inside</p>
       <h2>Screenshots</h2>
       <p class="lead">The GUI is built with egui/eframe for a fast, native feel on every platform.</p>
-      <figure class="shot">
-        <img src="MainScreenshot.png" alt="emberviewer main window: provider sidebar, tree browser with live values, and a matrix crosspoint grid" loading="lazy" />
-        <figcaption>Address-book sidebar, lazy tree browser with a live value column, and the matrix crosspoint grid.</figcaption>
-      </figure>
+      <div class="carousel" data-carousel>
+        <div class="carousel-viewport">
+          <div class="carousel-track">
+            <figure class="slide">
+              <img src="MainScreenshot.png" alt="emberviewer main window: provider sidebar, tree browser with live values, and a matrix crosspoint grid" loading="lazy" />
+              <figcaption>Address-book sidebar, lazy tree browser with a live value column, and the matrix crosspoint grid.</figcaption>
+            </figure>
+            <figure class="slide">
+              <img src="Screenshot2.png" alt="emberviewer screenshot" loading="lazy" />
+              <figcaption>Matrix routing with device-resolved source/target labels and the signal-parameters popup.</figcaption>
+            </figure>
+            <figure class="slide">
+              <img src="Screenshot3.png" alt="emberviewer screenshot" loading="lazy" />
+              <figcaption>Server mode: the same interface running in a phone browser over the WiFi.</figcaption>
+            </figure>
+          </div>
+          <button class="carousel-arrow prev" type="button" aria-label="Previous screenshot">
+            <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" d="M15 5l-7 7 7 7"/></svg>
+          </button>
+          <button class="carousel-arrow next" type="button" aria-label="Next screenshot">
+            <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
+          </button>
+        </div>
+        <div class="carousel-dots" role="group" aria-label="Choose a screenshot">
+          <button class="dot is-active" type="button" aria-label="Screenshot 1"></button>
+          <button class="dot" type="button" aria-label="Screenshot 2"></button>
+          <button class="dot" type="button" aria-label="Screenshot 3"></button>
+        </div>
+      </div>
     </div>
   </section>
 
   <!-- ===================== Getting started ===================== -->
-  <section id="getting-started">
+  <section id="getting-started" class="alt">
     <div class="wrap">
       <p class="eyebrow">Getting started</p>
       <h2>Run it in a couple of minutes</h2>
@@ -226,7 +277,7 @@ cd emberviewer</code></pre>
   </section>
 
   <!-- ===================== Docs callout ===================== -->
-  <section id="docs" class="alt">
+  <section id="docs">
     <div class="wrap">
       <div class="callout">
         <span class="dot" style="width:46px;height:46px;border-radius:12px;background:var(--ember-soft);display:grid;place-items:center;flex:none">
@@ -256,6 +307,28 @@ cd emberviewer</code></pre>
       </div>
     </div>
   </footer>
+
+  <!-- Lightweight, dependency-free carousel: native scroll-snap for swipe;
+       JS only wires the arrows and the position-tracking dots. -->
+  <script>
+    document.querySelectorAll('[data-carousel]').forEach(function (c) {
+      var track = c.querySelector('.carousel-track');
+      var slides = c.querySelectorAll('.slide');
+      var dots = c.querySelectorAll('.carousel-dots .dot');
+      var index = function () { return Math.round(track.scrollLeft / track.clientWidth); };
+      var go = function (i) {
+        i = Math.max(0, Math.min(slides.length - 1, i));
+        track.scrollTo({ left: i * track.clientWidth, behavior: 'smooth' });
+      };
+      c.querySelector('.prev').addEventListener('click', function () { go(index() - 1); });
+      c.querySelector('.next').addEventListener('click', function () { go(index() + 1); });
+      dots.forEach(function (d, i) { d.addEventListener('click', function () { go(i); }); });
+      track.addEventListener('scroll', function () {
+        var i = index();
+        dots.forEach(function (d, j) { d.classList.toggle('is-active', j === i); });
+      }, { passive: true });
+    });
+  </script>
 
 </body>
 </html>

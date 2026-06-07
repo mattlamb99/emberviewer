@@ -13,7 +13,7 @@ use ember_web_proto::{WireNode, WireProvider};
 
 use crate::address_book::{AddressBook, Id, Node, DEFAULT_PORT};
 use crate::hub::HubRegistry;
-use crate::model::{format_value, TreeModel};
+use crate::model::{format_value, label_fetch_step, TreeModel, LABEL_FETCH_RETRY_SECS};
 use crate::net::{ConnectionHandle, NetCommand, NetEvent};
 use crate::server::{self, ServerHandle};
 use crate::settings::{OrderBy, Settings, StartupMode};
@@ -55,6 +55,11 @@ struct Session {
     meter_range: HashMap<Vec<u32>, (f64, f64)>,
     /// Label sub-tree paths already requested (dedup for eager matrix-label fetch).
     label_fetch: HashSet<Vec<u32>>,
+    /// Per label sub-tree node: (egui time of last request, attempts so far).
+    /// Embedded devices silently drop getDirectory requests under the initial
+    /// discovery burst, so a one-shot fetch can be lost forever; we re-request
+    /// (throttled, capped) until the node actually reports children.
+    label_retry: HashMap<Vec<u32>, (f64, u8)>,
     /// Open "signal parameters" popup: the signal's parameter node path + a title.
     signal_params: Option<(Vec<u32>, String)>,
     /// egui time until which the padlock flashes (set when a locked control is
@@ -404,6 +409,7 @@ impl App {
                 popped: Vec::new(),
                 meter_range: HashMap::new(),
                 label_fetch: HashSet::new(),
+                label_retry: HashMap::new(),
                 signal_params: None,
                 flash_until: 0.0,
                 traffic_prev: ember_net::TrafficSnapshot::default(),
@@ -2093,6 +2099,10 @@ fn render_entry(
 
     if entry.kind.is_expandable() {
         let id = ui.make_persistent_id(("node", path));
+        // Captured before `show_header` borrows `ui` (the borrow lasts until
+        // `header.body`), so the matrix label fetch below can use them.
+        let now = ui.input(|i| i.time);
+        let ctx = ui.ctx().clone();
         let mut heading = egui::RichText::new(node_label(&entry, opts));
         if !eff_online {
             heading = heading.weak().italics();
@@ -2113,26 +2123,34 @@ fn render_entry(
             header.toggle();
         }
         let next_open = header.is_open();
+        // Eagerly fetch a matrix's directory and label/param sub-trees as soon as
+        // the node is *visible* (not only when its grid is open). The label subtree
+        // is several getDirectory levels deep (basePath → targets/sources → string
+        // params), so kicking it off early — and on every frame the matrix is in
+        // view, regardless of expand state — lets the multi-phase fetch finish even
+        // on slow devices, instead of stalling if the grid is collapsed mid-fetch.
+        if let Some(m) = &entry.matrix {
+            if session.label_fetch.insert(entry.path.clone()) {
+                commands.push(NetCommand::GetMatrixDirectory(entry.path.clone()));
+            }
+            let mut pending = false;
+            for base in m.label_paths.clone() {
+                pending |= fetch_label_subtree(session, &base, now, commands);
+            }
+            if let Some(ploc) = m.params_location.clone() {
+                pending |= fetch_label_subtree(session, &ploc, now, commands);
+            }
+            // Keep ticking while a label fetch is still outstanding, so the retry
+            // fires even if nothing else (e.g. a live meter) is repainting.
+            if pending {
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64(
+                    LABEL_FETCH_RETRY_SECS,
+                ));
+            }
+        }
         header.body(|ui| {
             // Matrix grid / function form, when this node is one.
             if let Some(m) = &entry.matrix {
-                // The matrix's connections/targets/sources arrive from a
-                // getDirectory on the matrix itself (not on its parent) — fetch
-                // it once when the grid first shows.
-                if session.label_fetch.insert(entry.path.clone()) {
-                    commands.push(NetCommand::GetMatrixDirectory(entry.path.clone()));
-                }
-                // Eagerly fetch each label sub-tree: basePath → targets/sources
-                // → string params (number = signal id, value = name).
-                let bases = m.label_paths.clone();
-                for base in &bases {
-                    fetch_label_subtree(session, base, commands);
-                }
-                // Eagerly fetch the parameters-location node (gain/name/type
-                // params) so the Matrix Params subtree populates on open.
-                if let Some(ploc) = m.params_location.clone() {
-                    fetch_label_subtree(session, &ploc, commands);
-                }
                 // The grid is greyed and inert when locked; a click then flashes
                 // the padlock to show why nothing routed.
                 let (clicked, blocked) = lockable(ui, opts.armed, |ui| {
@@ -2475,26 +2493,50 @@ fn editor(
 
 /// Eagerly fetch a matrix label sub-tree so source/target names resolve:
 /// request the base node, then its `targets`/`sources` children (whose
-/// getDirectory returns the label string params). Deduped via `label_fetch`.
-fn fetch_label_subtree(session: &mut Session, base: &[u32], commands: &mut Vec<NetCommand>) {
-    // Always getDirectory the base once — it usually exists as a stub (created by
-    // the matrix's parent fetch) with no children loaded yet, so checking
-    // is_none() would never fetch its targets/sources.
-    if session.label_fetch.insert(base.to_vec()) {
-        commands.push(NetCommand::GetDirectory(base.to_vec()));
-    }
-    // Once the base's children (targets/sources) arrive, fetch them too (their
-    // getDirectory returns the label string params).
+/// getDirectory returns the label string params).
+///
+/// A one-shot request isn't enough: embedded devices (e.g. Arkona AT300) drop
+/// getDirectory requests issued during the initial discovery burst, so the base
+/// node's children would never arrive and the labels stayed blank until the user
+/// manually expanded the sub-tree (which re-requested it). [`label_fetch_step`]
+/// re-requests any still-childless node, throttled and capped, until it
+/// populates. Returns true while any node is still pending (so the caller keeps
+/// the UI repainting until the retry fires).
+fn fetch_label_subtree(
+    session: &mut Session,
+    base: &[u32],
+    now: f64,
+    commands: &mut Vec<NetCommand>,
+) -> bool {
+    let mut fetch_if_empty = |session: &mut Session, path: &[u32]| -> bool {
+        let has_children = session
+            .tree
+            .get(path)
+            .is_some_and(|e| !e.children.is_empty());
+        let step = label_fetch_step(session.label_retry.get(path).copied(), has_children, now);
+        if let Some(new_state) = step.new_state {
+            session.label_retry.insert(path.to_vec(), new_state);
+        }
+        if step.request {
+            commands.push(NetCommand::GetDirectory(path.to_vec()));
+        }
+        step.pending
+    };
+
+    // The base usually exists as a childless stub (created by the matrix's parent
+    // fetch); keep asking until its targets/sources children arrive.
+    let mut pending = fetch_if_empty(session, base);
+    // Once the base's children (targets/sources) are known, fetch each of them
+    // too (their getDirectory returns the label string params).
     let children = session
         .tree
         .get(base)
         .map(|e| e.children.clone())
         .unwrap_or_default();
     for child in children {
-        if session.label_fetch.insert(child.clone()) {
-            commands.push(NetCommand::GetDirectory(child));
-        }
+        pending |= fetch_if_empty(session, &child);
     }
+    pending
 }
 
 /// Paint a small filled status dot inline (drawn, not a font glyph, so it always

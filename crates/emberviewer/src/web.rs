@@ -10,7 +10,9 @@ use ember_proto::glow::{self, Value};
 use ember_web_proto::{ClientMsg, WireNode, WireProvider, WireStatus};
 
 use crate::matrix_view;
-use crate::model::{format_value, Kind, MatrixInfo, TreeModel};
+use crate::model::{
+    format_value, label_fetch_step, Kind, MatrixInfo, TreeModel, LABEL_FETCH_RETRY_SECS,
+};
 use crate::net::NetCommand;
 use crate::web_transport::{WebEvent, WsConnection};
 use crate::widgets;
@@ -32,8 +34,11 @@ pub struct WebApp {
     /// Expanded nodes: path -> (last fetch time, attempts). Re-fetches an
     /// open-but-empty node a few times so a dropped response self-heals.
     requested: HashMap<Vec<u32>, (f64, u8)>,
-    /// Matrix-related sub-trees already requested (matrix dir, labels, params).
-    matrix_fetch: HashSet<Vec<u32>>,
+    /// Matrix-related sub-trees: path -> (last request time, attempts). The
+    /// matrix dir is asked once; label sub-tree nodes are re-asked (throttled,
+    /// capped) until they report children, since embedded devices drop
+    /// getDirectory requests during the initial discovery burst.
+    matrix_fetch: HashMap<Vec<u32>, (f64, u8)>,
     /// Parameters we hold a subscription for.
     subscribed: HashSet<Vec<u32>>,
     /// In-progress string edits, keyed by path.
@@ -81,7 +86,7 @@ impl WebApp {
             tree: TreeModel::new(),
             status: None,
             requested: HashMap::new(),
-            matrix_fetch: HashSet::new(),
+            matrix_fetch: HashMap::new(),
             subscribed: HashSet::new(),
             edits: HashMap::new(),
             func_inputs: HashMap::new(),
@@ -417,7 +422,7 @@ struct RenderCtx<'a> {
     /// egui time, for throttled re-fetch of empty nodes.
     now: f64,
     requested: &'a mut HashMap<Vec<u32>, (f64, u8)>,
-    matrix_fetch: &'a mut HashSet<Vec<u32>>,
+    matrix_fetch: &'a mut HashMap<Vec<u32>, (f64, u8)>,
     edits: &'a mut HashMap<Vec<u32>, String>,
     func_inputs: &'a mut HashMap<(Vec<u32>, usize), String>,
     invocations: &'a mut HashMap<Vec<u32>, i32>,
@@ -535,7 +540,14 @@ fn render_node(ui: &mut egui::Ui, ctx: &mut RenderCtx, path: &[u32]) {
             egui::CollapsingHeader::new(egui::RichText::new(label).strong())
                 .id_salt(path)
                 .show(ui, |ui| {
-                    fetch_matrix(tree, path, m, ctx.matrix_fetch, ctx.commands);
+                    // Keep ticking while a label fetch is still outstanding so the
+                    // throttled retry fires even when nothing else repaints.
+                    if fetch_matrix(tree, path, m, ctx.matrix_fetch, ctx.now, ctx.commands) {
+                        ui.ctx()
+                            .request_repaint_after(std::time::Duration::from_secs_f64(
+                                LABEL_FETCH_RETRY_SECS,
+                            ));
+                    }
                     let (clicked, blocked) = widgets::lockable(ui, ctx.armed, |ui| {
                         matrix_view::render_matrix(ui, entry, m, true, ctx.commands)
                     });
@@ -792,43 +804,68 @@ fn status_text(st: &WireStatus) -> String {
 }
 
 /// Fetch the data a matrix grid needs: the matrix's own directory (targets /
-/// sources / connections) and its label / parameter sub-trees. Deduped via
-/// `mfetch`; the label children fetch once they appear in the tree.
+/// sources / connections, asked once) and its label / parameter sub-trees.
+/// Returns true while any label sub-tree node is still unsatisfied (so the
+/// caller keeps repainting until the throttled retry fires).
 fn fetch_matrix(
     tree: &TreeModel,
     path: &[u32],
     m: &MatrixInfo,
-    mfetch: &mut HashSet<Vec<u32>>,
+    mfetch: &mut HashMap<Vec<u32>, (f64, u8)>,
+    now: f64,
     commands: &mut Vec<NetCommand>,
-) {
-    if mfetch.insert(path.to_vec()) {
+) -> bool {
+    // The matrix's own directory is requested once.
+    if !mfetch.contains_key(path) {
+        mfetch.insert(path.to_vec(), (now, 1));
         commands.push(NetCommand::GetMatrixDirectory(path.to_vec()));
     }
+    let mut pending = false;
     for base in &m.label_paths {
-        fetch_subtree(tree, base, mfetch, commands);
+        pending |= fetch_subtree(tree, base, mfetch, now, commands);
     }
     if let Some(ploc) = &m.params_location {
-        fetch_subtree(tree, ploc, mfetch, commands);
+        pending |= fetch_subtree(tree, ploc, mfetch, now, commands);
     }
+    pending
 }
 
-/// Fetch a sub-tree base and (once known) its immediate children.
+/// Fetch a sub-tree base and (once known) its immediate children, re-requesting
+/// any still-childless node (throttled, capped). Returns true while unsatisfied.
 fn fetch_subtree(
     tree: &TreeModel,
     base: &[u32],
-    mfetch: &mut HashSet<Vec<u32>>,
+    mfetch: &mut HashMap<Vec<u32>, (f64, u8)>,
+    now: f64,
     commands: &mut Vec<NetCommand>,
-) {
-    if mfetch.insert(base.to_vec()) {
-        commands.push(NetCommand::GetDirectory(base.to_vec()));
-    }
+) -> bool {
+    let mut pending = fetch_if_empty(tree, base, mfetch, now, commands);
     if let Some(e) = tree.get(base) {
         for child in &e.children {
-            if mfetch.insert(child.clone()) {
-                commands.push(NetCommand::GetDirectory(child.clone()));
-            }
+            pending |= fetch_if_empty(tree, child, mfetch, now, commands);
         }
     }
+    pending
+}
+
+/// Request `path`'s directory if it has no children yet and retries remain.
+/// Returns true while the node is still unsatisfied and within its retry budget.
+fn fetch_if_empty(
+    tree: &TreeModel,
+    path: &[u32],
+    mfetch: &mut HashMap<Vec<u32>, (f64, u8)>,
+    now: f64,
+    commands: &mut Vec<NetCommand>,
+) -> bool {
+    let has_children = tree.get(path).is_some_and(|e| !e.children.is_empty());
+    let step = label_fetch_step(mfetch.get(path).copied(), has_children, now);
+    if let Some(new_state) = step.new_state {
+        mfetch.insert(path.to_vec(), new_state);
+    }
+    if step.request {
+        commands.push(NetCommand::GetDirectory(path.to_vec()));
+    }
+    step.pending
 }
 
 /// Build the WebSocket URL from the page location (`ws[s]://host/ws`).
