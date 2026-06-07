@@ -93,6 +93,11 @@ pub struct Settings {
     /// Use egui's dark theme (light theme when false).
     #[serde(default = "default_true")]
     pub dark_mode: bool,
+    /// Safety lock starting state: when true, value/route/invoke controls start
+    /// locked on launch and the operator taps the padlock to arm them. A runtime
+    /// toggle flips it during the session; this is just the startup default.
+    #[serde(default)]
+    pub lock_on_startup: bool,
     /// Serve the web UI (browser access to this instance) when true.
     #[serde(default)]
     pub server_enabled: bool,
@@ -131,6 +136,7 @@ impl Default for Settings {
             send_keepalive: true,
             matrix_targets_on_top: true,
             dark_mode: true,
+            lock_on_startup: false,
             server_enabled: false,
             server_port: default_server_port(),
             server_bind: default_bind(),

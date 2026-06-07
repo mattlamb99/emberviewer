@@ -10,6 +10,58 @@ use crate::model::{format_value, Entry, FunctionInfo, InvocationOutcome};
 use crate::net::NetCommand;
 
 // ---------------------------------------------------------------------------
+// Safety lock
+// ---------------------------------------------------------------------------
+
+/// How long (egui seconds) the padlock flashes after a blocked interaction.
+pub const LOCK_FLASH_SECS: f64 = 0.7;
+
+/// Render `content` greyed-out and inert when `!enabled`. Returns the content's
+/// value and, when disabled, whether the user clicked the locked region — so the
+/// caller can flash the padlock to explain why nothing happened.
+pub fn lockable<R>(
+    ui: &mut egui::Ui,
+    enabled: bool,
+    content: impl FnOnce(&mut egui::Ui) -> R,
+) -> (R, bool) {
+    let inner = ui.add_enabled_ui(enabled, content);
+    let blocked = !enabled
+        && ui
+            .interact(
+                inner.response.rect,
+                inner.response.id.with("lock-overlay"),
+                egui::Sense::click(),
+            )
+            .clicked();
+    (inner.inner, blocked)
+}
+
+/// A padlock toggle button: 🔒 Locked / 🔓 Armed, flips `locked` on click, and
+/// flashes a red fill while `now < flash_until`. Requests repaints while flashing.
+pub fn lock_toggle(ui: &mut egui::Ui, locked: &mut bool, now: f64, flash_until: f64) {
+    let (glyph, word, color) = if *locked {
+        ('\u{1F512}', "Locked", egui::Color32::from_rgb(210, 120, 60))
+    } else {
+        ('\u{1F513}', "Armed", egui::Color32::from_rgb(80, 175, 100))
+    };
+    let mut btn = egui::Button::new(egui::RichText::new(format!("{glyph} {word}")).color(color));
+    if now < flash_until {
+        // Fade a red fill out over the flash window (pulses the eye to the lock).
+        let frac = ((flash_until - now) / LOCK_FLASH_SECS).clamp(0.0, 1.0) as f32;
+        btn = btn.fill(egui::Color32::from_rgb(210, 70, 60).gamma_multiply(frac));
+        ui.ctx().request_repaint();
+    }
+    let tip = if *locked {
+        "Controls are locked against accidental changes — click to arm"
+    } else {
+        "Editing enabled — click to lock"
+    };
+    if ui.add(btn).on_hover_text(tip).clicked() {
+        *locked = !*locked;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Meters
 // ---------------------------------------------------------------------------
 
