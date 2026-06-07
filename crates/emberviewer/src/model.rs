@@ -733,10 +733,149 @@ pub fn format_value(v: &Value) -> String {
     }
 }
 
+/// How long (egui seconds) to wait before re-requesting a label sub-tree node
+/// whose directory hasn't come back, and how many times to retry before giving
+/// up (so a genuinely empty labels node isn't polled forever — keeping device
+/// traffic minimal).
+pub const LABEL_FETCH_RETRY_SECS: f64 = 2.0;
+pub const LABEL_FETCH_MAX_ATTEMPTS: u8 = 6;
+
+/// Outcome of [`label_fetch_step`]: what the caller should do for one label
+/// sub-tree node this frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LabelFetchStep {
+    /// Issue a `getDirectory` for this node now.
+    pub request: bool,
+    /// If `Some`, store this as the node's new (last-request time, attempts).
+    pub new_state: Option<(f64, u8)>,
+    /// The node is still waiting on its directory (keep the UI repainting).
+    pub pending: bool,
+}
+
+/// Decide whether to (re)issue a directory request for a label sub-tree node.
+///
+/// Embedded devices (e.g. Arkona AT300) silently drop `getDirectory` requests
+/// issued during the initial discovery burst, so a one-shot fetch can be lost
+/// forever and the matrix's labels never resolve. This retries any node that
+/// still has no children — throttled to once per [`LABEL_FETCH_RETRY_SECS`] and
+/// capped at [`LABEL_FETCH_MAX_ATTEMPTS`] — until its directory populates.
+///
+/// `state` is the node's prior (last-request time, attempts), `has_children`
+/// whether its directory has arrived, `now` the current egui time.
+pub fn label_fetch_step(state: Option<(f64, u8)>, has_children: bool, now: f64) -> LabelFetchStep {
+    if has_children {
+        return LabelFetchStep {
+            request: false,
+            new_state: None,
+            pending: false,
+        };
+    }
+    match state {
+        None => LabelFetchStep {
+            request: true,
+            new_state: Some((now, 1)),
+            pending: true,
+        },
+        Some((last, attempts)) if attempts < LABEL_FETCH_MAX_ATTEMPTS => {
+            if now - last >= LABEL_FETCH_RETRY_SECS {
+                LabelFetchStep {
+                    request: true,
+                    new_state: Some((now, attempts + 1)),
+                    pending: true,
+                }
+            } else {
+                LabelFetchStep {
+                    request: false,
+                    new_state: None,
+                    pending: true,
+                }
+            }
+        }
+        Some(_) => LabelFetchStep {
+            request: false,
+            new_state: None,
+            pending: false, // retry budget exhausted
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use ember_proto::glow::*;
+
+    fn unhex(s: &str) -> Vec<u8> {
+        let s: String = s.chars().filter(|c| !c.is_whitespace()).collect();
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
+    /// An Arkona AT300 matrix [0,2,50,3] declares a label whose basePath is the
+    /// sibling "labels" node [0,2,50,0]; that node holds targets/sources sub-nodes
+    /// of string params (number = signal, value = name). Once the subtree is
+    /// fetched, the matrix's target/source labels must resolve. Uses the device's
+    /// real bytes for the matrix + labels/targets/sources nodes.
+    #[test]
+    fn arkona_matrix_labels_resolve_from_fetched_subtree() {
+        let mut tree = TreeModel::new();
+        // Real dir of [0,2,50]: "labels" node [0,2,50,0] + "Matrix" [0,2,50,3]
+        // (the matrix's labels field carries basePath [0,2,50,0]).
+        for r in glow::decode_roots(&unhex("606e6b6ca01d6a1ba0060d0400023200a111310fa0080c066c6162656c73a3030101ffa04b7149a0060d0400023203a13b3139a0080c064d6174726978a203020100a303020101a403020122a503020136aa193017a0157213a0060d0400023200a1090c077072696d617279a5023000")).into_iter().flatten() {
+            tree.merge(r);
+        }
+        // Real dir of [0,2,50,0]: "targets" [..,1] + "sources" [..,2].
+        for r in glow::decode_roots(&unhex("60446b42a01f6a1da0070d050002320001a1123110a0090c0774617267657473a3030101ffa01f6a1da0070d050002320002a1123110a0090c07736f7572636573a3030101ff")).into_iter().flatten() {
+            tree.merge(r);
+        }
+        assert_eq!(
+            tree.get(&[0, 2, 50, 3])
+                .and_then(|e| e.matrix.as_ref())
+                .map(|m| m.label_paths.clone()),
+            Some(vec![vec![0, 2, 50, 0]]),
+            "matrix label basePath must decode from the real bytes"
+        );
+        tree.merge(params_doc(&[
+            (
+                &[0, 2, 50, 0, 1, 0],
+                "t0",
+                Value::String("i_o_module.output[0].sdi".into()),
+                3,
+            ),
+            (
+                &[0, 2, 50, 0, 1, 5000],
+                "t5000",
+                Value::String("re_play.video.delays[0]".into()),
+                3,
+            ),
+            (
+                &[0, 2, 50, 0, 2, 0],
+                "s0",
+                Value::String("i_o_module.input[0].sdi".into()),
+                3,
+            ),
+        ]));
+
+        let m = tree
+            .get(&[0, 2, 50, 3])
+            .and_then(|e| e.matrix.as_ref())
+            .expect("matrix present");
+        assert_eq!(
+            m.target_labels.get(&0).map(String::as_str),
+            Some("i_o_module.output[0].sdi"),
+            "target labels did not resolve: {:?}",
+            m.target_labels
+        );
+        assert_eq!(
+            m.target_labels.get(&5000).map(String::as_str),
+            Some("re_play.video.delays[0]")
+        );
+        assert_eq!(
+            m.source_labels.get(&0).map(String::as_str),
+            Some("i_o_module.input[0].sdi")
+        );
+    }
 
     /// Build a QualifiedNode root document.
     fn node_doc(path: &[u32], id: &str) -> Root {
@@ -848,5 +987,31 @@ mod tests {
         let e = tree.get(&[5]).unwrap();
         assert_eq!(e.value, Some(Value::Integer(2)));
         assert_eq!(e.identifier, "color"); // preserved
+    }
+
+    #[test]
+    fn label_fetch_retries_until_children_then_gives_up() {
+        // First sight of an empty node: request immediately.
+        let s = label_fetch_step(None, false, 0.0);
+        assert!(s.request && s.pending);
+        assert_eq!(s.new_state, Some((0.0, 1)));
+
+        // Within the retry window: still pending, but don't re-request.
+        let s = label_fetch_step(Some((0.0, 1)), false, 1.0);
+        assert!(!s.request && s.pending);
+        assert_eq!(s.new_state, None);
+
+        // After the window: re-request (a dropped response self-heals).
+        let s = label_fetch_step(Some((0.0, 1)), false, LABEL_FETCH_RETRY_SECS);
+        assert!(s.request && s.pending);
+        assert_eq!(s.new_state, Some((LABEL_FETCH_RETRY_SECS, 2)));
+
+        // Children arrived: satisfied, never asked again.
+        let s = label_fetch_step(Some((10.0, 3)), true, 100.0);
+        assert!(!s.request && !s.pending);
+
+        // Budget exhausted with no children: give up (no forever-polling).
+        let s = label_fetch_step(Some((90.0, LABEL_FETCH_MAX_ATTEMPTS)), false, 1000.0);
+        assert!(!s.request && !s.pending);
     }
 }
