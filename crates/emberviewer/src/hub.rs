@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
-use ember_net::{ConnError, Connection, Inbound, ProviderWriter};
+use ember_net::{ConnError, Connection, Inbound, ProviderWriter, Traffic, TrafficSnapshot};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::net::{NetCommand, NetEvent};
@@ -40,6 +40,8 @@ pub struct Hub {
     msg_tx: mpsc::UnboundedSender<HubMsg>,
     evt_tx: broadcast::Sender<Arc<NetEvent>>,
     next_id: AtomicU64,
+    // Shared byte/frame counters for this provider's socket (read by the UI).
+    traffic: Arc<Traffic>,
     // Dropped when the Hub is dropped, which signals the connection task to stop.
     _shutdown: oneshot::Sender<()>,
 }
@@ -56,20 +58,28 @@ impl Hub {
         let (msg_tx, msg_rx) = mpsc::unbounded_channel();
         let (evt_tx, _) = broadcast::channel(EVENT_CAPACITY);
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let traffic = Arc::new(Traffic::default());
         rt.spawn(run_connection(
             addr,
             msg_rx,
             evt_tx.clone(),
             ctx,
             keepalive,
+            traffic.clone(),
             shutdown_rx,
         ));
         Hub {
             msg_tx,
             evt_tx,
             next_id: AtomicU64::new(0),
+            traffic,
             _shutdown: shutdown_tx,
         }
+    }
+
+    /// Current cumulative byte/frame totals for this provider's socket.
+    pub fn traffic_snapshot(&self) -> TrafficSnapshot {
+        self.traffic.snapshot()
     }
 
     /// Attach a new subscriber (the desktop UI, or a web client).
@@ -181,6 +191,10 @@ impl HubLease {
     pub async fn recv(&mut self) -> Option<Arc<NetEvent>> {
         self.sub.recv().await
     }
+    /// Cumulative socket byte/frame totals for this provider (shared across viewers).
+    pub fn traffic(&self) -> TrafficSnapshot {
+        self._hub.traffic_snapshot()
+    }
 }
 
 impl Drop for Subscriber {
@@ -201,12 +215,14 @@ enum SessionEnd {
     Dropped(String),
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_connection(
     addr: String,
     mut msg_rx: mpsc::UnboundedReceiver<HubMsg>,
     evt_tx: broadcast::Sender<Arc<NetEvent>>,
     ctx: egui::Context,
     keepalive: bool,
+    traffic: Arc<Traffic>,
     mut shutdown_rx: oneshot::Receiver<()>,
 ) {
     let emit = |e: NetEvent| {
@@ -234,6 +250,7 @@ async fn run_connection(
                     &mut msg_rx,
                     &emit,
                     keepalive,
+                    &traffic,
                     &mut subs,
                     &mut shutdown_rx,
                 )
@@ -276,15 +293,17 @@ async fn run_connection(
 }
 
 /// Drive one live connection until it drops, the user disconnects, or shutdown.
+#[allow(clippy::too_many_arguments)]
 async fn run_session(
     conn: Connection,
     msg_rx: &mut mpsc::UnboundedReceiver<HubMsg>,
     emit: &impl Fn(NetEvent),
     keepalive: bool,
+    traffic: &Arc<Traffic>,
     subs: &mut SubMap,
     shutdown_rx: &mut oneshot::Receiver<()>,
 ) -> SessionEnd {
-    let (mut reader, mut writer) = conn.into_split();
+    let (mut reader, mut writer) = conn.into_split_with(traffic.clone());
 
     // Kick off discovery at the root, then restore any active subscriptions —
     // after a reconnect the device has forgotten them.

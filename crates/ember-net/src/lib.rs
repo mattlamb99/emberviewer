@@ -3,5 +3,6 @@
 pub mod connection;
 
 pub use connection::{
-    ConnError, Connection, Inbound, ProviderReader, ProviderWriter, DEFAULT_PORT,
+    ConnError, Connection, Inbound, ProviderReader, ProviderWriter, Traffic, TrafficSnapshot,
+    DEFAULT_PORT,
 };

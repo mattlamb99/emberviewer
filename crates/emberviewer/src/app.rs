@@ -18,8 +18,8 @@ use crate::net::{ConnectionHandle, NetCommand, NetEvent};
 use crate::server::{self, ServerHandle};
 use crate::settings::{OrderBy, Settings, StartupMode};
 use crate::widgets::{
-    display_value, draw_vmeter, format_suffix, is_meterable, meter_range, meter_readout,
-    render_function, value_f64,
+    display_value, draw_vmeter, format_suffix, is_meterable, lock_toggle, lockable, meter_range,
+    meter_readout, render_function, value_f64, LOCK_FLASH_SECS,
 };
 
 /// State for one open provider connection.
@@ -57,6 +57,23 @@ struct Session {
     label_fetch: HashSet<Vec<u32>>,
     /// Open "signal parameters" popup: the signal's parameter node path + a title.
     signal_params: Option<(Vec<u32>, String)>,
+    /// egui time until which the padlock flashes (set when a locked control is
+    /// clicked, to explain why the action did nothing).
+    flash_until: f64,
+    /// Last sampled socket totals and the time of that sample (for rate calc).
+    traffic_prev: ember_net::TrafficSnapshot,
+    traffic_t: f64,
+    /// Smoothed TX/RX rates toward the device, recomputed ~once a second.
+    rate: TrafficRate,
+}
+
+/// TX/RX rates toward a device: bytes and S101 frames per second, each way.
+#[derive(Default, Clone, Copy)]
+struct TrafficRate {
+    rx_bytes_s: f64,
+    tx_bytes_s: f64,
+    rx_pkt_s: f64,
+    tx_pkt_s: f64,
 }
 
 /// A meter popped into its own always-pinnable window.
@@ -120,6 +137,14 @@ struct FolderDialog {
     rename: Option<Id>,
 }
 
+/// An address book loaded from a file, held until the user chooses how to apply it.
+struct ImportPending {
+    book: AddressBook,
+    source: String,
+    providers: usize,
+    folders: usize,
+}
+
 /// Settings that affect how the provider tree is rendered, bundled so they can
 /// be threaded through the recursive render functions.
 struct RenderOpts {
@@ -127,6 +152,9 @@ struct RenderOpts {
     show_descriptions: bool,
     order_by: OrderBy,
     matrix_targets_on_top: bool,
+    /// Whether value/route/invoke controls are interactive this frame. False when
+    /// the safety lock is on and the modifier (Ctrl) isn't held.
+    armed: bool,
 }
 
 pub struct App {
@@ -138,6 +166,8 @@ pub struct App {
     active: Option<Id>,
     add: AddDialog,
     folder_dialog: FolderDialog,
+    /// A loaded-but-not-yet-applied address book awaiting a merge/replace choice.
+    import: Option<ImportPending>,
     status_line: String,
     /// Filter text for the providers sidebar.
     provider_filter: String,
@@ -153,6 +183,9 @@ pub struct App {
     /// Theme currently applied to the egui context (`None` until the first frame
     /// applies it). Re-applied whenever it differs from `settings.dark_mode`.
     applied_dark: Option<bool>,
+    /// Safety lock runtime state: when true, value/route/invoke controls are
+    /// locked. Initialised from `settings.lock_on_startup`; toggled via the padlock.
+    locked: bool,
     /// Shared per-provider connections (desktop + web viewers).
     hubs: HubRegistry,
     /// Provider list exposed to the web server (kept in sync with the book).
@@ -260,6 +293,7 @@ impl App {
             .expect("tokio runtime");
         let book = AddressBook::load().unwrap_or_default();
         let settings = Settings::load();
+        let locked = settings.lock_on_startup;
         let hubs = HubRegistry::new(rt.handle().clone(), cc.egui_ctx.clone());
         let mut app = App {
             rt,
@@ -268,6 +302,7 @@ impl App {
             active: None,
             add: AddDialog::default(),
             folder_dialog: FolderDialog::default(),
+            import: None,
             status_line: String::new(),
             provider_filter: String::new(),
             settings,
@@ -278,6 +313,7 @@ impl App {
             show_discovery: false,
             show_about: false,
             applied_dark: None,
+            locked,
             hubs,
             catalog: Arc::new(Mutex::new(server::CatalogData::default())),
             server: None,
@@ -369,6 +405,10 @@ impl App {
                 meter_range: HashMap::new(),
                 label_fetch: HashSet::new(),
                 signal_params: None,
+                flash_until: 0.0,
+                traffic_prev: ember_net::TrafficSnapshot::default(),
+                traffic_t: 0.0,
+                rate: TrafficRate::default(),
             },
         );
         self.active = Some(id);
@@ -519,6 +559,168 @@ impl App {
         }
     }
 
+    /// Whether value/route/invoke controls accept input this frame. With the
+    /// safety lock off they always do; with it on, only while Ctrl is held.
+    fn edits_armed(&self) -> bool {
+        !self.locked
+    }
+
+    /// Sample each connection's byte/frame counters and update its smoothed
+    /// TX/RX rate about once a second. Schedules a repaint so the figure stays
+    /// live and decays to zero when traffic stops.
+    fn update_traffic(&mut self, now: f64, ctx: &egui::Context) {
+        let mut any_active = false;
+        for s in self.sessions.values_mut() {
+            if matches!(s.status, Status::Connected | Status::Connecting) {
+                any_active = true;
+            }
+            let dt = now - s.traffic_t;
+            if dt >= 1.0 {
+                let cur = s.handle.traffic();
+                if s.traffic_t > 0.0 {
+                    let rate = |c: u64, p: u64| c.saturating_sub(p) as f64 / dt;
+                    s.rate = TrafficRate {
+                        rx_bytes_s: rate(cur.rx_bytes, s.traffic_prev.rx_bytes),
+                        tx_bytes_s: rate(cur.tx_bytes, s.traffic_prev.tx_bytes),
+                        rx_pkt_s: rate(cur.rx_frames, s.traffic_prev.rx_frames),
+                        tx_pkt_s: rate(cur.tx_frames, s.traffic_prev.tx_frames),
+                    };
+                }
+                s.traffic_prev = cur;
+                s.traffic_t = now;
+            }
+        }
+        if any_active {
+            ctx.request_repaint_after(std::time::Duration::from_secs(1));
+        }
+    }
+
+    /// Save the address book to a user-chosen JSON file (to share with colleagues).
+    fn export_address_book(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Export address book")
+            .add_filter("JSON", &["json"])
+            .set_file_name("emberviewer-address-book.json")
+            .save_file()
+        else {
+            return;
+        };
+        match self.book.save_to(&path) {
+            Ok(()) => self.status_line = format!("exported address book to {}", path.display()),
+            Err(e) => self.status_line = format!("export failed: {e}"),
+        }
+    }
+
+    /// Pick a JSON file and stage it for import; the user then chooses merge or
+    /// replace (so an import never silently overwrites a carefully-built book).
+    fn import_address_book(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Import address book")
+            .add_filter("JSON", &["json"])
+            .pick_file()
+        else {
+            return;
+        };
+        match AddressBook::load_from(&path) {
+            Ok(book) => {
+                let (providers, folders) = book.counts();
+                let source = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.display().to_string());
+                self.import = Some(ImportPending {
+                    book,
+                    source,
+                    providers,
+                    folders,
+                });
+            }
+            Err(e) => self.status_line = format!("import failed: {e}"),
+        }
+    }
+
+    /// Persist the address book after an import, reporting the outcome.
+    fn save_book_after_import(&mut self, what: String) {
+        match self.book.save() {
+            Ok(()) => self.status_line = what,
+            Err(e) => self.status_line = format!("{what}, but saving failed: {e}"),
+        }
+    }
+
+    /// Modal asking whether a staged import should merge into or replace the book.
+    fn import_dialog(&mut self, ctx: &egui::Context) {
+        let Some(pending) = &self.import else {
+            return;
+        };
+        let (cur_p, cur_f) = self.book.counts();
+        let summary = format!(
+            "“{}” has {} provider(s) in {} folder(s).\n\
+             Your current book has {} provider(s) in {} folder(s).",
+            pending.source, pending.providers, pending.folders, cur_p, cur_f
+        );
+        let mut choice: Option<bool> = None; // Some(true)=merge, Some(false)=replace
+        let mut cancel = false;
+        egui::Window::new("Import address book")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.label(summary);
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Merge keeps your entries and adds the imported ones. \
+                         Replace discards your current book.",
+                    )
+                    .small()
+                    .weak(),
+                );
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .button("Merge")
+                        .on_hover_text("Add the imported entries to your current book")
+                        .clicked()
+                    {
+                        choice = Some(true);
+                    }
+                    if ui
+                        .button(
+                            egui::RichText::new("Replace")
+                                .color(egui::Color32::from_rgb(200, 80, 60)),
+                        )
+                        .on_hover_text("Discard your current book and use the imported one")
+                        .clicked()
+                    {
+                        choice = Some(false);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+
+        if cancel {
+            self.import = None;
+            return;
+        }
+        let Some(merge) = choice else {
+            return;
+        };
+        let pending = self.import.take().expect("pending import present");
+        if merge {
+            let nodes = pending.book.root().children.clone();
+            self.book.graft(AddressBook::ROOT_ID, &nodes);
+            self.save_book_after_import(format!(
+                "merged {} provider(s) from {}",
+                pending.providers, pending.source
+            ));
+        } else {
+            self.book = pending.book;
+            self.save_book_after_import(format!("replaced address book from {}", pending.source));
+        }
+    }
+
     /// Append a log entry to the buffer and (if configured) the log file.
     fn push_log(&mut self, entry: LogEntry) {
         let path = self.settings.log_file.trim();
@@ -541,6 +743,54 @@ impl App {
         if len > 5000 {
             self.log.drain(0..len - 5000);
         }
+    }
+}
+
+/// Open the folder containing `path` in the OS file manager (Explorer / Finder /
+/// the desktop's default). Best-effort: failures are silently ignored.
+fn open_log_folder(path: &str) {
+    use std::path::{Path, PathBuf};
+    let p = Path::new(path);
+    let dir = p
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    // Make absolute without canonicalising (Windows \\?\ paths confuse Explorer).
+    let dir = if dir.is_absolute() {
+        dir
+    } else {
+        std::env::current_dir().map(|c| c.join(&dir)).unwrap_or(dir)
+    };
+    #[cfg(target_os = "windows")]
+    let prog = "explorer";
+    #[cfg(target_os = "macos")]
+    let prog = "open";
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let prog = "xdg-open";
+    let _ = std::process::Command::new(prog).arg(&dir).spawn();
+}
+
+/// Status-bar traffic readout: bit rate and packet rate each way.
+fn traffic_text(r: &TrafficRate) -> String {
+    format!(
+        "RX {} ({:.0} pkt/s) · TX {} ({:.0} pkt/s)",
+        fmt_bitrate(r.rx_bytes_s),
+        r.rx_pkt_s,
+        fmt_bitrate(r.tx_bytes_s),
+        r.tx_pkt_s,
+    )
+}
+
+/// A bytes-per-second value as a human bit rate.
+fn fmt_bitrate(bytes_s: f64) -> String {
+    let bits = bytes_s * 8.0;
+    if bits >= 1.0e6 {
+        format!("{:.1} Mbit/s", bits / 1.0e6)
+    } else if bits >= 1.0e3 {
+        format!("{:.0} kbit/s", bits / 1.0e3)
+    } else {
+        format!("{bits:.0} bit/s")
     }
 }
 
@@ -572,6 +822,7 @@ impl eframe::App for App {
             self.refresh_catalog();
         }
         self.pump_network();
+        self.update_traffic(ctx.input(|i| i.time), &ctx);
         self.process_pulses(&ctx);
         self.poll_discovery(&ctx);
         self.popped_meters(&ctx);
@@ -595,10 +846,37 @@ impl eframe::App for App {
                 {
                     self.toggle_discovery();
                 }
+                ui.menu_button("Address book", |ui| {
+                    if ui
+                        .button("Export…")
+                        .on_hover_text("Save the address book to a JSON file to share")
+                        .clicked()
+                    {
+                        self.export_address_book();
+                        ui.close();
+                    }
+                    if ui
+                        .button("Import…")
+                        .on_hover_text("Load a JSON file, then choose to merge or replace")
+                        .clicked()
+                    {
+                        self.import_address_book();
+                        ui.close();
+                    }
+                });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.selectable_label(self.show_about, "About").clicked() {
                         self.show_about = !self.show_about;
                     }
+                    ui.separator();
+                    // Safety padlock: lock/arm the value/route/invoke controls.
+                    let now = ui.input(|i| i.time);
+                    let flash = self
+                        .active
+                        .and_then(|id| self.sessions.get(&id))
+                        .map(|s| s.flash_until)
+                        .unwrap_or(0.0);
+                    lock_toggle(ui, &mut self.locked, now, flash);
                 });
             });
         });
@@ -606,6 +884,7 @@ impl eframe::App for App {
         self.sidebar(ui, &ctx);
         self.add_dialog(&ctx);
         self.folder_dialog(&ctx);
+        self.import_dialog(&ctx);
         self.options_window(&ctx);
         self.about_window(&ctx);
         self.signal_params_window(&ctx);
@@ -626,6 +905,13 @@ impl eframe::App for App {
                         };
                         paint_dot(ui, status_color(Some(&s.status)));
                         ui.label(txt);
+                        if matches!(s.status, Status::Connected) {
+                            ui.separator();
+                            ui.label(traffic_text(&s.rate)).on_hover_text(
+                                "Traffic on this device's connection (shared by all viewers).\n\
+                                 RX = received from the device, TX = sent to it.",
+                            );
+                        }
                     }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -828,13 +1114,29 @@ impl App {
                     }
                 });
                 let hr = resp.header_response;
-                // Drop onto a folder → move the dragged node into it.
-                if let Some(p) = hr.dnd_release_payload::<DragPayload>() {
-                    if p.0 != folder.id {
-                        *action = Some(SidebarAction::Move {
-                            node: p.0,
-                            into: folder.id,
-                        });
+                // Drop a dragged provider/folder onto this folder's row to move it
+                // inside. While a drag is in progress, make the whole header row a
+                // drop target with a highlight, instead of relying on the bare
+                // (narrow, unhighlighted) collapsing-header response.
+                if egui::DragAndDrop::has_payload_of_type::<DragPayload>(ui.ctx()) {
+                    let row =
+                        egui::Rect::from_x_y_ranges(ui.max_rect().x_range(), hr.rect.y_range());
+                    let drop = ui.interact(
+                        row,
+                        ui.make_persistent_id(("folder-drop", folder.id)),
+                        egui::Sense::hover(),
+                    );
+                    if drop.contains_pointer() {
+                        ui.painter()
+                            .rect_filled(row, 4.0, ACCENT.gamma_multiply(0.22));
+                    }
+                    if let Some(p) = drop.dnd_release_payload::<DragPayload>() {
+                        if p.0 != folder.id {
+                            *action = Some(SidebarAction::Move {
+                                node: p.0,
+                                into: folder.id,
+                            });
+                        }
                     }
                 }
                 hr.context_menu(|ui| {
@@ -1138,12 +1440,22 @@ impl App {
                     ui.end_row();
 
                     ui.label("Log file");
-                    changed |= ui
-                        .add(
-                            egui::TextEdit::singleline(&mut self.settings.log_file)
-                                .hint_text("optional path"),
-                        )
-                        .changed();
+                    ui.horizontal(|ui| {
+                        changed |= ui
+                            .add(
+                                egui::TextEdit::singleline(&mut self.settings.log_file)
+                                    .hint_text("optional path"),
+                            )
+                            .changed();
+                        let has_path = !self.settings.log_file.trim().is_empty();
+                        if ui
+                            .add_enabled(has_path, egui::Button::new("Open folder"))
+                            .on_hover_text("Show the log file's folder in your file manager")
+                            .clicked()
+                        {
+                            open_log_folder(self.settings.log_file.trim());
+                        }
+                    });
                     ui.end_row();
                 });
                 ui.separator();
@@ -1166,6 +1478,17 @@ impl App {
                     .checkbox(
                         &mut self.settings.matrix_targets_on_top,
                         "Matrix: targets on top (else sources on top)",
+                    )
+                    .changed();
+                changed |= ui
+                    .checkbox(
+                        &mut self.settings.lock_on_startup,
+                        "Start with controls locked (safety)",
+                    )
+                    .on_hover_text(
+                        "The padlock in the top bar locks value/route/invoke controls against\n\
+                         accidental changes. This sets whether it starts locked on launch;\n\
+                         toggle the padlock any time during a session.",
                     )
                     .changed();
                 if ui
@@ -1351,6 +1674,7 @@ impl App {
             show_descriptions: self.settings.show_descriptions,
             order_by: self.settings.order_by,
             matrix_targets_on_top: self.settings.matrix_targets_on_top,
+            armed: self.edits_armed(),
         };
         let Some(session) = self.sessions.get_mut(&id) else {
             return;
@@ -1641,6 +1965,8 @@ impl App {
             });
             return;
         };
+        // Compute before borrowing the session (which borrows `self.sessions`).
+        let armed = self.edits_armed();
         let Some(session) = self.sessions.get_mut(&id) else {
             return;
         };
@@ -1681,6 +2007,7 @@ impl App {
             show_descriptions: self.settings.show_descriptions,
             order_by: self.settings.order_by,
             matrix_targets_on_top: self.settings.matrix_targets_on_top,
+            armed,
         };
 
         // Collect commands to send, and the set of parameters currently on
@@ -1806,13 +2133,21 @@ fn render_entry(
                 if let Some(ploc) = m.params_location.clone() {
                     fetch_label_subtree(session, &ploc, commands);
                 }
-                if let Some((is_target, sig)) = crate::matrix_view::render_matrix(
-                    ui,
-                    &entry,
-                    m,
-                    opts.matrix_targets_on_top,
-                    commands,
-                ) {
+                // The grid is greyed and inert when locked; a click then flashes
+                // the padlock to show why nothing routed.
+                let (clicked, blocked) = lockable(ui, opts.armed, |ui| {
+                    crate::matrix_view::render_matrix(
+                        ui,
+                        &entry,
+                        m,
+                        opts.matrix_targets_on_top,
+                        commands,
+                    )
+                });
+                if blocked {
+                    session.flash_until = ui.input(|i| i.time) + LOCK_FLASH_SECS;
+                }
+                if let Some((is_target, sig)) = clicked {
                     // Open the clicked signal's parameter node (gain/type/…).
                     let base = if is_target {
                         m.param_targets_path.clone()
@@ -1829,16 +2164,21 @@ fn render_entry(
                     }
                 }
             } else if let Some(f) = &entry.function {
-                render_function(
-                    ui,
-                    &entry,
-                    f,
-                    &mut session.func_inputs,
-                    &mut session.invocations,
-                    &mut session.next_invocation_id,
-                    &session.tree.invocation_results,
-                    commands,
-                );
+                let (_, blocked) = lockable(ui, opts.armed, |ui| {
+                    render_function(
+                        ui,
+                        &entry,
+                        f,
+                        &mut session.func_inputs,
+                        &mut session.invocations,
+                        &mut session.next_invocation_id,
+                        &session.tree.invocation_results,
+                        commands,
+                    );
+                });
+                if blocked {
+                    session.flash_until = ui.input(|i| i.time) + LOCK_FLASH_SECS;
+                }
             }
             let children = sorted_paths(&session.tree, &entry.children, opts.order_by);
             for child in &children {
@@ -1869,6 +2209,47 @@ fn render_entry(
 }
 
 /// Render a parameter row: label, value, and (if writable) an editor.
+/// The shared right-click menu for a parameter row (copy path/value, log changes,
+/// pop out the meter). Attached to both the name and the value so either works.
+fn param_menu(
+    ui: &mut egui::Ui,
+    session: &mut Session,
+    entry: &crate::model::Entry,
+    logging: bool,
+    meterable: bool,
+) {
+    context_copy(ui, &entry.path, &entry.identifier);
+    if let Some(v) = &entry.value {
+        if ui.button("Copy value").clicked() {
+            ui.ctx().copy_text(crate::model::format_value(v));
+            ui.close();
+        }
+    }
+    ui.separator();
+    let l = if logging {
+        "Stop logging"
+    } else {
+        "Log changes"
+    };
+    if ui.button(l).clicked() {
+        if logging {
+            session.logged.remove(&entry.path);
+        } else {
+            session.logged.insert(entry.path.clone());
+        }
+        ui.close();
+    }
+    if meterable && ui.button("Pop out meter").clicked() {
+        if !session.popped.iter().any(|p| p.path == entry.path) {
+            session.popped.push(PoppedMeter {
+                path: entry.path.clone(),
+                always_on_top: false,
+            });
+        }
+        ui.close();
+    }
+}
+
 fn render_parameter(
     ui: &mut egui::Ui,
     session: &mut Session,
@@ -1914,50 +2295,50 @@ fn render_parameter(
             if name.clicked() {
                 session.selected = Some(entry.path.clone());
             }
-            name.context_menu(|ui| {
-                context_copy(ui, &entry.path, &entry.identifier);
-                if let Some(v) = &entry.value {
-                    if ui.button("Copy value").clicked() {
-                        ui.ctx().copy_text(crate::model::format_value(v));
-                        ui.close();
-                    }
-                }
-                ui.separator();
-                let l = if logging {
-                    "Stop logging"
-                } else {
-                    "Log changes"
-                };
-                if ui.button(l).clicked() {
-                    if logging {
-                        session.logged.remove(&entry.path);
-                    } else {
-                        session.logged.insert(entry.path.clone());
-                    }
-                    ui.close();
-                }
-                if meterable && ui.button("Pop out meter").clicked() {
-                    if !session.popped.iter().any(|p| p.path == entry.path) {
-                        session.popped.push(PoppedMeter {
-                            path: entry.path.clone(),
-                            always_on_top: false,
-                        });
-                    }
-                    ui.close();
-                }
-            });
+            name.context_menu(|ui| param_menu(ui, session, entry, logging, meterable));
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // Keep values clear of the (Windows) scrollbar.
                 ui.add_space(14.0);
+                // Inline mini-meter for numeric params: click to show the big meter,
+                // right-click for the same options as the name/value.
+                if meterable {
+                    let range = meter_range(entry, &mut session.meter_range);
+                    let value = entry.value.as_ref().and_then(value_f64);
+                    let h = ui.spacing().interact_size.y;
+                    let mr = draw_vmeter(ui, value, range, 10.0, h);
+                    if mr.clicked() {
+                        session.selected = Some(entry.path.clone());
+                    }
+                    mr.context_menu(|ui| param_menu(ui, session, entry, logging, meterable));
+                }
                 if entry.param_type == Some(glow::parameter_type::TRIGGER) {
-                    if ui.button("Fire").clicked() {
-                        commands.push(NetCommand::SetValue(entry.path.clone(), Value::Integer(0)));
+                    let (_, blocked) = lockable(ui, opts.armed, |ui| {
+                        if ui.button("Fire").clicked() {
+                            commands
+                                .push(NetCommand::SetValue(entry.path.clone(), Value::Integer(0)));
+                        }
+                    });
+                    if blocked {
+                        session.flash_until = ui.input(|i| i.time) + LOCK_FLASH_SECS;
                     }
                 } else if entry.is_writable() {
-                    editor(ui, session, entry, opts, commands);
+                    let (_, blocked) = lockable(ui, opts.armed, |ui| {
+                        editor(ui, session, entry, opts, commands)
+                    });
+                    if blocked {
+                        session.flash_until = ui.input(|i| i.time) + LOCK_FLASH_SECS;
+                    }
                 } else if let Some(v) = &entry.value {
-                    ui.label(display_value(entry, v));
+                    // The value is also a select/right-click target (like the name),
+                    // so you can click it to show the meter or pop it out.
+                    let vresp = ui
+                        .add(egui::Label::new(display_value(entry, v)).sense(egui::Sense::click()))
+                        .on_hover_text("click to show meter · right-click for options");
+                    if vresp.clicked() {
+                        session.selected = Some(entry.path.clone());
+                    }
+                    vresp.context_menu(|ui| param_menu(ui, session, entry, logging, meterable));
                 } else {
                     ui.weak("—");
                 }

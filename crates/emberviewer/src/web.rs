@@ -52,6 +52,12 @@ pub struct WebApp {
     /// Last "denied" message from the server (read-only mode).
     denied: Option<String>,
     dark: bool,
+    /// Per-browser safety: locked (the default) greys the value/route/invoke
+    /// controls until the user taps the padlock to arm them. Resets to locked on
+    /// every page load.
+    locked: bool,
+    /// egui time until which the padlock flashes after a blocked-while-locked tap.
+    flash_until: f64,
     /// egui time of the last reconnect attempt (for throttling).
     last_reconnect: f64,
 }
@@ -86,6 +92,8 @@ impl WebApp {
             signal_params: None,
             denied: None,
             dark: true,
+            locked: true,
+            flash_until: 0.0,
             last_reconnect: 0.0,
         }
     }
@@ -194,6 +202,9 @@ impl eframe::App for WebApp {
                     ui.label(status_text(st));
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // Safety padlock: locked by default, so a stray tap can't change
+                    // a live device. Tap to arm; tap again to lock.
+                    widgets::lock_toggle(ui, &mut self.locked, now, self.flash_until);
                     if ui
                         .button(if self.dark { "Light" } else { "Dark" })
                         .on_hover_text("Toggle theme")
@@ -323,6 +334,8 @@ impl eframe::App for WebApp {
                         visible: &mut visible,
                         row: &mut row,
                         selected: &mut self.selected,
+                        armed: !self.locked,
+                        flash: &mut self.flash_until,
                     };
                     for root in &roots {
                         render_node(ui, &mut ctx, root);
@@ -418,6 +431,11 @@ struct RenderCtx<'a> {
     row: &'a mut usize,
     /// Currently-selected parameter (shown in the right meter pane).
     selected: &'a mut Option<Vec<u32>>,
+    /// Whether value/route/invoke controls are interactive (safety toggle).
+    armed: bool,
+    /// Set to `now + LOCK_FLASH_SECS` when a locked control is tapped, to flash
+    /// the padlock and explain why nothing happened.
+    flash: &'a mut f64,
 }
 
 impl WebApp {
@@ -429,6 +447,9 @@ impl WebApp {
         };
         let mut open = true;
         let mut commands: Vec<NetCommand> = Vec::new();
+        let armed = !self.locked;
+        let now = ui.input(|i| i.time);
+        let mut flashed = false;
         egui::Window::new(format!("Signal · {title}"))
             .open(&mut open)
             .resizable(true)
@@ -450,7 +471,16 @@ impl WebApp {
                         for cp in &children {
                             if let Some(ce) = self.tree.get(cp) {
                                 ui.label(egui::RichText::new(&ce.identifier).strong());
-                                param_editor(ui, &self.tree, cp, &mut self.edits, &mut commands);
+                                let (_, blocked) = widgets::lockable(ui, armed, |ui| {
+                                    param_editor(
+                                        ui,
+                                        &self.tree,
+                                        cp,
+                                        &mut self.edits,
+                                        &mut commands,
+                                    );
+                                });
+                                flashed |= blocked;
                                 ui.end_row();
                             }
                         }
@@ -458,6 +488,9 @@ impl WebApp {
             });
         if !open {
             self.signal_params = None;
+        }
+        if flashed {
+            self.flash_until = now + widgets::LOCK_FLASH_SECS;
         }
         if let (Some(conn), Some(id)) = (&self.conn, self.current) {
             for cmd in &commands {
@@ -503,9 +536,13 @@ fn render_node(ui: &mut egui::Ui, ctx: &mut RenderCtx, path: &[u32]) {
                 .id_salt(path)
                 .show(ui, |ui| {
                     fetch_matrix(tree, path, m, ctx.matrix_fetch, ctx.commands);
-                    if let Some((is_target, sig)) =
+                    let (clicked, blocked) = widgets::lockable(ui, ctx.armed, |ui| {
                         matrix_view::render_matrix(ui, entry, m, true, ctx.commands)
-                    {
+                    });
+                    if blocked {
+                        *ctx.flash = ctx.now + widgets::LOCK_FLASH_SECS;
+                    }
+                    if let Some((is_target, sig)) = clicked {
                         *ctx.signal_click = Some((path.to_vec(), is_target, sig));
                     }
                 });
@@ -522,16 +559,21 @@ fn render_node(ui: &mut egui::Ui, ctx: &mut RenderCtx, path: &[u32]) {
             egui::CollapsingHeader::new(heading)
                 .id_salt(path)
                 .show(ui, |ui| {
-                    widgets::render_function(
-                        ui,
-                        entry,
-                        f,
-                        ctx.func_inputs,
-                        ctx.invocations,
-                        ctx.next_invocation_id,
-                        &tree.invocation_results,
-                        ctx.commands,
-                    );
+                    let (_, blocked) = widgets::lockable(ui, ctx.armed, |ui| {
+                        widgets::render_function(
+                            ui,
+                            entry,
+                            f,
+                            ctx.func_inputs,
+                            ctx.invocations,
+                            ctx.next_invocation_id,
+                            &tree.invocation_results,
+                            ctx.commands,
+                        );
+                    });
+                    if blocked {
+                        *ctx.flash = ctx.now + widgets::LOCK_FLASH_SECS;
+                    }
                 });
             return;
         }
@@ -604,7 +646,12 @@ fn render_node(ui: &mut egui::Ui, ctx: &mut RenderCtx, path: &[u32]) {
                         *ctx.selected = Some(path.to_vec());
                     }
                 }
-                param_editor(ui, tree, path, ctx.edits, ctx.commands);
+                let (_, blocked) = widgets::lockable(ui, ctx.armed, |ui| {
+                    param_editor(ui, tree, path, ctx.edits, ctx.commands);
+                });
+                if blocked {
+                    *ctx.flash = ctx.now + widgets::LOCK_FLASH_SECS;
+                }
             });
         })
         .response;

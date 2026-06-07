@@ -143,6 +143,52 @@ impl AddressBook {
         &self.root
     }
 
+    /// Count of (providers, folders) anywhere in the book.
+    pub fn counts(&self) -> (usize, usize) {
+        fn walk(nodes: &[Node], p: &mut usize, f: &mut usize) {
+            for n in nodes {
+                match n {
+                    Node::Folder(folder) => {
+                        *f += 1;
+                        walk(&folder.children, p, f);
+                    }
+                    Node::Provider(_) => *p += 1,
+                }
+            }
+        }
+        let (mut p, mut f) = (0, 0);
+        walk(&self.root.children, &mut p, &mut f);
+        (p, f)
+    }
+
+    /// Append `nodes` (e.g. from an imported book) under `parent`, re-assigning
+    /// fresh ids throughout so they never collide with existing entries. Returns
+    /// `None` if `parent` is not a folder.
+    pub fn graft(&mut self, parent: Id, nodes: &[Node]) -> Option<()> {
+        let regrown: Vec<Node> = nodes.iter().map(|n| self.reid(n)).collect();
+        self.folder_mut(parent)?.children.extend(regrown);
+        Some(())
+    }
+
+    /// Deep-copy `node` with freshly allocated ids throughout.
+    fn reid(&mut self, node: &Node) -> Node {
+        match node {
+            Node::Folder(f) => {
+                let id = self.alloc_id();
+                let children = f.children.iter().map(|c| self.reid(c)).collect();
+                Node::Folder(Folder {
+                    id,
+                    name: f.name.clone(),
+                    children,
+                })
+            }
+            Node::Provider(p) => Node::Provider(Provider {
+                id: self.alloc_id(),
+                ..p.clone()
+            }),
+        }
+    }
+
     /// Adds a new folder under `parent` (use [`AddressBook::ROOT_ID`] for the
     /// top level). Returns the new folder's id, or `None` if `parent` does not
     /// exist or is not a folder.
@@ -611,6 +657,39 @@ mod tests {
 
         // Tree unchanged by the failed moves.
         assert_eq!(ab.iter().count(), 5);
+    }
+
+    #[test]
+    fn graft_merges_with_fresh_noncolliding_ids() {
+        // Two independently-built books reuse the same low ids; grafting one into
+        // the other must re-id so nothing collides.
+        let (mut dst, ..) = sample();
+        let (src, ..) = sample();
+        let (dp, df) = dst.counts();
+        let (sp, sf) = src.counts();
+
+        let before: Vec<Id> = collect_ids(dst.root());
+        let nodes = src.root().children.clone();
+        dst.graft(AddressBook::ROOT_ID, &nodes).unwrap();
+
+        // Counts add up, and every id in the merged tree is unique.
+        assert_eq!(dst.counts(), (dp + sp, df + sf));
+        let all = collect_ids(dst.root());
+        let unique: std::collections::HashSet<_> = all.iter().copied().collect();
+        assert_eq!(all.len(), unique.len(), "ids must be unique after graft");
+        // The original entries are untouched.
+        assert!(before.iter().all(|id| unique.contains(id)));
+    }
+
+    fn collect_ids(folder: &Folder) -> Vec<Id> {
+        let mut out = vec![folder.id];
+        for child in &folder.children {
+            match child {
+                Node::Folder(f) => out.extend(collect_ids(f)),
+                Node::Provider(p) => out.push(p.id),
+            }
+        }
+        out
     }
 
     #[test]

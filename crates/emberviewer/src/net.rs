@@ -101,4 +101,9 @@ impl ConnectionHandle {
     pub fn drain(&mut self) -> Vec<NetEvent> {
         self.lease.drain()
     }
+
+    /// Cumulative socket byte/frame totals toward this provider.
+    pub fn traffic(&self) -> ember_net::TrafficSnapshot {
+        self.lease.traffic()
+    }
 }
