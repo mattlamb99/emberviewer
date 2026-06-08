@@ -43,7 +43,7 @@ fn describe(re: &RootElement) -> (Vec<u32>, String, bool) {
             let val = c
                 .and_then(|c| c.value_.as_ref())
                 .map(format_value)
-                .unwrap_or_else(|| "—".into());
+                .unwrap_or_else(|| "-".into());
             let acc = c.and_then(|c| c.access).unwrap_or(access::READ);
             let rw = if acc & access::WRITE != 0 { "rw" } else { "ro" };
             (qp.path.arcs(), format!("{id} = {val} ({rw})"), false)

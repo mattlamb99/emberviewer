@@ -1,7 +1,7 @@
 # emberviewer docs site
 
 This folder is a small, self-contained static website for **emberviewer**, designed to be
-served by **GitHub Pages**. It has no build step and no external dependencies — plain HTML
+served by **GitHub Pages**. It has no build step and no external dependencies - plain HTML
 and CSS that also work when opened directly from disk.
 
 ## Files
@@ -14,7 +14,7 @@ and CSS that also work when opened directly from disk.
 | `style.css` | All site styling. Orange Ember+ accent (`#d9772b`), light theme with `prefers-color-scheme` dark support. |
 | `README.md` | This file. |
 
-The favicon and logo are inline SVG / data-URIs — there are **no external CDN requests**, so the
+The favicon and logo are inline SVG / data-URIs - there are **no external CDN requests**, so the
 site works fully offline and ships no trackers.
 
 ## Enabling GitHub Pages
@@ -36,7 +36,7 @@ GitHub Pages can serve from your own domain. To use one:
    `<owner>.github.io`, or `A`/`AAAA` records to GitHub's Pages IPs for an apex domain).
 3. Enable **Enforce HTTPS** once the certificate is provisioned.
 
-No `CNAME` file is included here — add one only if you set up a custom domain.
+No `CNAME` file is included here - add one only if you set up a custom domain.
 
 All links point at `mattlamb99/emberviewer`; the **Download** button and Releases links target
 `https://github.com/mattlamb99/emberviewer/releases`.

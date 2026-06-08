@@ -2,11 +2,11 @@
 //! app in server mode) and its **browser client** (the wasm build).
 //!
 //! Two frame kinds cross the socket:
-//! - **Text frames** carry JSON [`ClientMsg`]/[`ServerMsg`] — auth, the provider
+//! - **Text frames** carry JSON [`ClientMsg`]/[`ServerMsg`] - auth, the provider
 //!   list, open/close, status, and commands.
 //! - **Binary frames** carry Glow documents verbatim: a [`DocFrame`] is a little
 //!   `[u64 provider_id][BER bytes…]`, so the client decodes them with the same
-//!   `ember_proto::glow::decode_roots` it would use against a real device — no
+//!   `ember_proto::glow::decode_roots` it would use against a real device - no
 //!   serde shadow of the large `Root`/`Value`/`Matrix` types is needed.
 //!
 //! This crate deliberately has **no `ember-proto` dependency**: it is just the

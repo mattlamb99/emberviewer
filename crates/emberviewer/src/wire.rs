@@ -1,6 +1,6 @@
 //! Conversions between the in-process types (`NetCommand`/`NetEvent`/`Value`) and
 //! the WebSocket wire vocabulary in [`ember_web_proto`]. Shared by the server
-//! (native, server mode) and the browser client (wasm) — both are this crate.
+//! (native, server mode) and the browser client (wasm) - both are this crate.
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;

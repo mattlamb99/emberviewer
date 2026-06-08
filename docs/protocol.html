@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Ember+ primer — emberviewer docs</title>
+  <title>Ember+ primer - emberviewer docs</title>
   <meta name="description" content="A concise primer on the Ember+ control protocol and how emberviewer maps to it: providers, the tree of nodes, parameters, matrices and functions, and getDirectory / set / subscribe." />
   <meta name="color-scheme" content="light dark" />
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath fill='%23d9772b' d='M16 2c2 6-3 7-3 12a6 6 0 0 0 12 0c0-2-1-4-2-5 3 2 5 5 5 9a9 9 0 1 1-18 0c0-7 6-9 6-16z'/%3E%3C/svg%3E" />
@@ -55,7 +55,7 @@
       <strong>Ember+</strong> is an open control protocol from <a href="https://github.com/Lawo/ember-plus">Lawo</a>,
       widely used in broadcast and pro-audio gear to expose and control device parameters over the network.
       A device (or software) that publishes controllable data is a <strong>provider</strong>; a tool that
-      connects to it — like emberviewer — is a <strong>consumer</strong>.
+      connects to it - like emberviewer - is a <strong>consumer</strong>.
     </p>
     <p>
       Under the hood it is three nested layers over a single TCP connection (default port <code>9000</code>):
@@ -75,13 +75,13 @@
     </p>
     <dl class="term">
       <dt>Node</dt>
-      <dd>A branch in the tree — a container that groups other elements. Has an identifier and an optional description.</dd>
+      <dd>A branch in the tree - a container that groups other elements. Has an identifier and an optional description.</dd>
       <dt>Parameter</dt>
       <dd>A single value: integer, real, string, boolean or enumeration. May be read-only or read/write, and can carry min/max, units, an enum map and more.</dd>
       <dt>Matrix</dt>
       <dd>A routing grid of sources × targets. Connections (crosspoints) are made by tying a target to one or more sources.</dd>
       <dt>Function</dt>
-      <dd>A callable operation with typed arguments and results — invoke it to make the provider do something and return a value.</dd>
+      <dd>A callable operation with typed arguments and results - invoke it to make the provider do something and return a value.</dd>
       <dt>Stream</dt>
       <dd>A high-rate value channel, typically used for audio meters and other live telemetry.</dd>
     </dl>
@@ -98,21 +98,21 @@
     <h2>How emberviewer talks to a provider</h2>
     <p>Three operations cover almost everything emberviewer does:</p>
 
-    <h3>getDirectory — browse</h3>
+    <h3>getDirectory - browse</h3>
     <p>
       You never download the whole tree at once. emberviewer sends a <strong>getDirectory</strong> request for the
       children of a node, and the provider replies with that node's immediate children. Expanding a branch in the
-      UI issues another <code>getDirectory</code> for it — this is the "lazy" browsing you see in the tree.
+      UI issues another <code>getDirectory</code> for it - this is the "lazy" browsing you see in the tree.
     </p>
 
-    <h3>set — control</h3>
+    <h3>set - control</h3>
     <p>
       To change a writable parameter, emberviewer sends a <strong>set</strong> with the new value at that parameter's
       path. Booleans get dedicated set and <em>pulse</em> controls; other types are edited inline. The provider applies
       the change and reports the result back.
     </p>
 
-    <h3>subscribe — watch live</h3>
+    <h3>subscribe - watch live</h3>
     <p>
       Rather than polling, a consumer <strong>subscribes</strong> to a parameter and the provider pushes updates whenever
       the value changes. emberviewer subscribes to what you're viewing so the value column stays live, and records changes
@@ -132,7 +132,7 @@
     <h2>Where to go next</h2>
     <ul>
       <li>Lawo's reference implementation and spec discussion: <a href="https://github.com/Lawo/ember-plus">github.com/Lawo/ember-plus</a>.</li>
-      <li>Try emberviewer against the bundled test provider — see <a href="index.html#getting-started">Getting started</a>.</li>
+      <li>Try emberviewer against the bundled test provider - see <a href="index.html#getting-started">Getting started</a>.</li>
     </ul>
 
     <p class="back" style="margin-top:32px"><a href="index.html">&larr; Back to home</a></p>
@@ -141,7 +141,7 @@
   <footer class="site">
     <div class="wrap frow">
       <div>
-        <strong>emberviewer</strong> — MIT licensed. Built in Rust.
+        <strong>emberviewer</strong> - MIT licensed. Built in Rust.
         <br />Ember+ is a control protocol by <a href="https://github.com/Lawo/ember-plus">Lawo</a>; this project is not affiliated with Lawo.
       </div>
       <div class="links">

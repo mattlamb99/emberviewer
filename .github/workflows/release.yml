@@ -14,7 +14,7 @@ env:
 
 jobs:
   # Build the browser (wasm) UI bundle once. It is OS-independent, so the three
-  # native release jobs download it and embed it (rust-embed) — otherwise their
+  # native release jobs download it and embed it (rust-embed) - otherwise their
   # binaries would ship the build.rs placeholder page instead of the real web UI.
   web-bundle:
     name: web bundle (wasm)
@@ -107,7 +107,7 @@ jobs:
 
       # No rust-cache on the release jobs: a shared Linux cache leaks glibc-2.39
       # proc-macro .so files from the ubuntu-latest builds into the ubuntu-22.04
-      # (glibc 2.35) job and breaks the build. Release runs are rare — build clean.
+      # (glibc 2.35) job and breaks the build. Release runs are rare - build clean.
       - name: Download web bundle
         uses: actions/download-artifact@v4
         with:

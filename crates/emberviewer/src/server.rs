@@ -1,6 +1,6 @@
 //! Server mode: an HTTP + WebSocket server (axum) that lets browsers operate this
 //! running instance. It serves the web bundle, exposes the address-book provider
-//! list, and bridges each browser to the shared per-provider [`HubRegistry`] — so
+//! list, and bridges each browser to the shared per-provider [`HubRegistry`] - so
 //! every viewer (desktop + browsers) shares one connection per device.
 //!
 //! Wire vocabulary lives in [`ember_web_proto`]; documents cross as binary frames
@@ -338,7 +338,7 @@ async fn forward_event(id: u64, ev: &crate::net::NetEvent, sender: &mut WsSink) 
             // Forward the device's original BER bytes verbatim so the browser
             // decodes byte-identically to what `ember-net` decoded. Re-encoding
             // the parsed `roots` here was lossy for some providers (it dropped or
-            // mangled children — phantom/missing nodes in the web tree).
+            // mangled children - phantom/missing nodes in the web tree).
             let _ = sender
                 .send(Message::Binary(encode_doc_frame(id, raw).into()))
                 .await;

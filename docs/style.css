@@ -1,4 +1,4 @@
-/* emberviewer docs — self-contained, no external dependencies */
+/* emberviewer docs - self-contained, no external dependencies */
 
 :root {
   --ember: #d9772b;
@@ -115,7 +115,7 @@ header.site {
   padding: 84px 0 64px;
   text-align: center;
 }
-/* Blurred screenshot backdrop — its own layer so the blur never touches the
+/* Blurred screenshot backdrop - its own layer so the blur never touches the
    title/icon. Bled past the edges and scaled up so the blur has no hard border. */
 .hero::before {
   content: "";

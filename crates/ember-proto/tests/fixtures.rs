@@ -147,7 +147,7 @@ fn decode_child_response_all_parameter_types() {
     assert_eq!(c.r#type, Some(parameter_type::ENUM));
 }
 
-// Phase 4 fixtures — matrix, function, and an invocation result.
+// Phase 4 fixtures - matrix, function, and an invocation result.
 const MATRIX_RESPONSE: &str =
     "fe000e0001c001021f02604e6b4ca04a7148a0040d020002a120311ea0080c066d61\
 74726978a203020100a303020100a403020104a503020104a51e301ca00c700aa003020100a1030d0100a00c700aa00302\
@@ -166,7 +166,7 @@ fn decode_roots_handles_single_and_concatenated() {
     assert_eq!(roots.len(), 1);
     assert!(roots[0].is_ok());
 
-    // Two PDUs concatenated in one payload yield two roots — the case a strict
+    // Two PDUs concatenated in one payload yield two roots - the case a strict
     // single decode rejects as "extra data".
     let two_src = payload_of(CHILD_GETDIR_RESPONSE);
     let mut concat = one.clone();
@@ -237,7 +237,7 @@ b851eca0146512a003020102a10b0909c000111eb851eb851fa00c650aa003020103a1030201007c
 #[test]
 fn decode_stream_collection() {
     // The captured frame's CRC byte is a capture-tool transcription artifact
-    // (the live socket sends correct CRCs — verified separately), so decode the
+    // (the live socket sends correct CRCs - verified separately), so decode the
     // BER payload directly: strip BOF + the 9-byte S101 header and the CRC + EOF.
     let frame = hex(STREAM_COLLECTION);
     let payload = &frame[10..frame.len() - 3];

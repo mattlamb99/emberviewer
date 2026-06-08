@@ -1,4 +1,4 @@
-//! The matrix crosspoint grid — shared by the desktop app and the wasm browser
+//! The matrix crosspoint grid - shared by the desktop app and the wasm browser
 //! client. Targets-on-top puts targets across the columns and sources down the
 //! rows (swap with `targets_on_top = false`). Returns `Some((is_target, signal))`
 //! when a row/column header is clicked, so the caller can show that signal's
@@ -139,7 +139,7 @@ pub fn render_matrix(
 
                     // Resizable column-header height. Default tall enough to show rotated
                     // names when the columns have labels (else compact). Only the user's
-                    // drag is persisted — otherwise the height-18 captured before the
+                    // drag is persisted - otherwise the height-18 captured before the
                     // labels arrive would stick and the names would never rotate in.
                     let hh_id = egui::Id::new(("matrix_header_h", &path));
                     let default_hh = if col_labels.is_empty() { 18.0 } else { 76.0 };
