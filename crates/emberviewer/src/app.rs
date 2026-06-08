@@ -1855,6 +1855,9 @@ impl App {
         let Some(session) = self.sessions.get_mut(&id) else {
             return;
         };
+        // Device identity, shown on every pop-out so several stay distinguishable.
+        let dev_name = session.name.clone();
+        let dev_addr = session.addr.clone();
         let items: Vec<(usize, Vec<u32>, bool)> = session
             .popped
             .iter()
@@ -1870,41 +1873,168 @@ impl App {
             let range = meter_range(&entry, &mut session.meter_range);
             let value = entry.value.as_ref().and_then(value_f64);
             let title = entry.label();
+            let path_str = path
+                .iter()
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+                .join(".");
+            // Flank the meter with its identity so several open pop-outs stay
+            // distinguishable: device (name · host:port) reads up the left,
+            // parameter (name · path · description) reads up the right.
+            let left_text = format!("{dev_name}  ·  {dev_addr}");
+            let mut right_text = format!("{title}  ·  {path_str}");
+            if let Some(d) = entry.description.as_deref().filter(|d| !d.is_empty()) {
+                right_text.push_str("  ·  ");
+                right_text.push_str(d);
+            }
             let vp_id = egui::ViewportId::from_hash_of(("popmeter", id, &path));
+            // Borderless floating window: no OS title bar / min-max-close chrome.
+            // We provide drag-to-move and a right-click menu (close / pin) instead.
             let mut builder = egui::ViewportBuilder::default()
-                .with_title(format!("{title} — meter"))
-                .with_inner_size([130.0, 280.0])
-                .with_min_inner_size([90.0, 140.0]);
+                .with_title(format!("{title} — {dev_name}"))
+                .with_decorations(false)
+                .with_resizable(true)
+                .with_inner_size([150.0, 300.0])
+                .with_min_inner_size([104.0, 150.0]);
             if aot {
                 builder = builder.with_always_on_top();
             }
             let mut close = false;
             let mut toggle = false;
             ctx.show_viewport_immediate(vp_id, builder, |ctx, _| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    ui.vertical_centered(|ui| {
-                        ui.label(egui::RichText::new(&title).strong());
-                        let h = (ui.available_height() - 46.0).max(50.0);
-                        let resp = draw_vmeter(ui, value, range, 40.0, h);
-                        if let Some(v) = value {
-                            ui.label(meter_readout(&entry, v));
-                        }
-                        resp.context_menu(|ui| {
-                            let l = if aot {
-                                "Unpin (always on top)"
-                            } else {
-                                "Always on top"
-                            };
-                            if ui.button(l).clicked() {
-                                toggle = true;
-                                ui.close();
-                            }
-                            if ui.button("Close").clicked() {
-                                close = true;
-                                ui.close();
+                // A 1px border delineates the borderless window against the desktop.
+                let frame = egui::Frame::NONE
+                    .fill(ctx.style().visuals.panel_fill)
+                    .inner_margin(egui::Margin::same(6))
+                    .stroke(ctx.style().visuals.window_stroke());
+                egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
+                    let color = ui.visuals().text_color();
+                    let full_h = ui.available_height();
+                    let readout_h = if value.is_some() { 22.0 } else { 0.0 };
+                    let mh = (full_h - readout_h - 4.0).max(50.0);
+                    // Centre a fixed-width column (labels + meter) as one block so
+                    // the meter and the readout beneath it stay aligned at any
+                    // window width — `vertical_centered` alone would let the meter
+                    // row span full width (left-aligned) while centring the readout.
+                    const SIDE_W: f32 = 16.0;
+                    const METER_W: f32 = 40.0;
+                    const GAP: f32 = 2.0;
+                    let content_w = SIDE_W * 2.0 + METER_W + GAP * 2.0;
+                    let off = ((ui.available_width() - content_w) * 0.5).max(0.0);
+                    ui.horizontal(|ui| {
+                        ui.add_space(off);
+                        ui.vertical(|ui| {
+                            ui.set_width(content_w);
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = GAP;
+                                meter_side_label(ui, SIDE_W, mh, &left_text, color);
+                                draw_vmeter(ui, value, range, METER_W, mh);
+                                meter_side_label(ui, SIDE_W, mh, &right_text, color);
+                            });
+                            if let Some(v) = value {
+                                ui.vertical_centered(|ui| {
+                                    ui.label(meter_readout(&entry, v));
+                                });
                             }
                         });
                     });
+                    // Borderless interaction: the whole window is a drag handle (move
+                    // it like a title bar) and a right-click target (close / pin), with
+                    // a hover tooltip carrying the full, untruncated identity.
+                    let bg = ui.interact(
+                        ui.max_rect(),
+                        ui.id().with("winbg"),
+                        egui::Sense::click_and_drag(),
+                    );
+                    if bg.drag_started_by(egui::PointerButton::Primary) {
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                    }
+                    let mut tip = format!("{title}\n{dev_name}  ·  {dev_addr}\n{path_str}");
+                    if let Some(d) = entry.description.as_deref().filter(|d| !d.is_empty()) {
+                        tip.push('\n');
+                        tip.push_str(d);
+                    }
+                    bg.on_hover_text(tip).context_menu(|ui| {
+                        ui.label(egui::RichText::new(&title).strong());
+                        ui.label(
+                            egui::RichText::new(format!("{dev_name}  ·  {dev_addr}"))
+                                .small()
+                                .weak(),
+                        );
+                        ui.separator();
+                        ui.label(
+                            egui::RichText::new("Drag the meter to move it")
+                                .small()
+                                .weak(),
+                        );
+                        let l = if aot {
+                            "Unpin (always on top)"
+                        } else {
+                            "Always on top"
+                        };
+                        if ui.button(l).clicked() {
+                            toggle = true;
+                            ui.close();
+                        }
+                        if ui.button("Close").clicked() {
+                            close = true;
+                            ui.close();
+                        }
+                    });
+
+                    let area = ui.max_rect();
+                    // Faint × (top-right) to close — drawn, not a font glyph (those
+                    // tofu in the default font). Brightens on hover.
+                    let x_rect = egui::Rect::from_min_size(
+                        egui::pos2(area.right() - 17.0, area.top() + 1.0),
+                        egui::vec2(16.0, 16.0),
+                    );
+                    let x_resp = ui
+                        .interact(x_rect, ui.id().with("close"), egui::Sense::click())
+                        .on_hover_text("Close");
+                    let x_col = if x_resp.hovered() {
+                        egui::Color32::from_rgb(220, 90, 80)
+                    } else {
+                        ui.visuals().weak_text_color().gamma_multiply(0.55)
+                    };
+                    let xc = x_rect.center();
+                    let xs = egui::Stroke::new(1.5, x_col);
+                    ui.painter()
+                        .line_segment([xc + egui::vec2(-3.5, -3.5), xc + egui::vec2(3.5, 3.5)], xs);
+                    ui.painter()
+                        .line_segment([xc + egui::vec2(3.5, -3.5), xc + egui::vec2(-3.5, 3.5)], xs);
+                    if x_resp.clicked() {
+                        close = true;
+                    }
+
+                    // Bottom-right resize grip — borderless windows have no OS
+                    // resize border, so drag this to set the window's inner size.
+                    let g_rect = egui::Rect::from_min_size(
+                        area.right_bottom() - egui::vec2(14.0, 14.0),
+                        egui::vec2(14.0, 14.0),
+                    );
+                    let g_resp = ui
+                        .interact(g_rect, ui.id().with("grip"), egui::Sense::drag())
+                        .on_hover_cursor(egui::CursorIcon::ResizeNwSe);
+                    if g_resp.dragged() {
+                        let cur = ui.ctx().input(|i| i.screen_rect().size());
+                        let new = (cur + g_resp.drag_delta()).max(egui::vec2(104.0, 150.0));
+                        ui.ctx()
+                            .send_viewport_cmd(egui::ViewportCommand::InnerSize(new));
+                    }
+                    let g_col = ui
+                        .visuals()
+                        .weak_text_color()
+                        .gamma_multiply(if g_resp.hovered() { 1.0 } else { 0.6 });
+                    for off in [2.0, 6.0, 10.0] {
+                        ui.painter().line_segment(
+                            [
+                                egui::pos2(g_rect.right() - off, g_rect.bottom() - 1.5),
+                                egui::pos2(g_rect.right() - 1.5, g_rect.bottom() - off),
+                            ],
+                            egui::Stroke::new(1.0, g_col),
+                        );
+                    }
                 });
                 if ctx.input(|i| i.viewport().close_requested()) {
                     close = true;
@@ -2537,6 +2667,26 @@ fn fetch_label_subtree(
         pending |= fetch_if_empty(session, &child);
     }
     pending
+}
+
+/// Draw a `w`×`h` column holding `text` rotated 90° so it reads bottom-to-top,
+/// clipped to the column. Used to flank a pop-out meter with its device and
+/// parameter identity (the full strings are in the window's hover tooltip).
+fn meter_side_label(ui: &mut egui::Ui, w: f32, h: f32, text: &str, color: egui::Color32) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::hover());
+    let galley =
+        ui.painter()
+            .layout_no_wrap(text.to_owned(), egui::FontId::proportional(11.0), color);
+    let mut shape = egui::epaint::TextShape::new(
+        // Start the baseline near the bottom, centred across the column width;
+        // the string's start (most important info) sits at the bottom and any
+        // overflow clips off the top.
+        egui::pos2(rect.center().x - galley.size().y / 2.0, rect.bottom() - 2.0),
+        galley,
+        color,
+    );
+    shape.angle = -std::f32::consts::FRAC_PI_2;
+    ui.painter_at(rect).add(shape);
 }
 
 /// Paint a small filled status dot inline (drawn, not a font glyph, so it always
