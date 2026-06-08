@@ -75,11 +75,11 @@
       <p class="eyebrow">New <span class="pill">Server mode</span></p>
       <h2>Operate it from your phone, over the WiFi</h2>
       <p class="lead">
-        Ember+ gear usually sits behind a firewall only the engineering PC can reach, and the
-        embedded devices themselves cap how many consumers may connect. Flip on
-        <strong>server mode</strong> and the desktop app becomes the gateway: it holds one
-        connection per device and fans the live tree out to every browser on your network - no
-        app to install on the phone, and the phone never touches the gear directly.
+        Ember+ gear often sits on dedicated media networks that aren't always reachable from
+        where you need to be, and devices often limit how many Ember+ consumers can connect at
+        once. Flip on <strong>server mode</strong> and the desktop app becomes a gateway: it holds
+        one connection per device and fans the live tree out to browser clients. This opens up
+        access from iPads, tablets, phones and anything else with a browser.
       </p>
 
       <pre class="flow">Ember+ devices ──TCP──►  emberviewer (engineering PC)  ──HTTP / WebSocket──►   📱 phone
@@ -140,9 +140,17 @@
       <h2>Everything you need to drive a provider</h2>
       <p class="lead">A focused tool that gets out of your way - fast browsing, live values and real control.</p>
 
+      <p class="subhead">Standouts vs the old EmberPlusView</p>
       <div class="feature-grid">
         <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Server mode <span class="pill">New</span></h3><p>Serve the UI to phones and laptops on your LAN - token-protected, with read-only and open-LAN modes. <a href="#server-mode">Learn more</a>.</p></div></div>
-        <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Address book</h3><p>Organise providers in folders with drag-and-drop, saved between sessions.</p></div></div>
+        <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Streams &amp; meters <span class="pill">New</span></h3><p>High-rate <code>StreamFormat</code>-aware decode driving live vertical meters, with pop-out windows.</p></div></div>
+        <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Change logging <span class="pill">New</span></h3><p>A running log of parameter changes for monitoring and debugging, optionally written to a file.</p></div></div>
+        <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Address book <span class="pill">New</span></h3><p>Providers organised in folders with drag-and-drop, saved between sessions, with JSON import / export.</p></div></div>
+        <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Safety &amp; traffic <span class="pill">New</span></h3><p>An opt-in lock guards against accidental edits, and a TX/RX counter shows live traffic toward the device.</p></div></div>
+      </div>
+
+      <p class="subhead">And everything you expect</p>
+      <div class="feature-grid">
         <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>TCP connect</h3><p>Connect to any Ember+ provider over TCP (default port 9000).</p></div></div>
         <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Lazy tree browsing</h3><p>Walk the provider tree on demand with <code>getDirectory</code>, expanding only what you open.</p></div></div>
         <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>View &amp; set values</h3><p>Read parameter values and set them, with live subscriptions for changes.</p></div></div>
@@ -152,12 +160,9 @@
         <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Multiple connections</h3><p>Several simultaneous provider sessions, each in its own tab.</p></div></div>
         <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Search &amp; filter</h3><p>Filter the tree, copy a node's path, and find what you need fast.</p></div></div>
         <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Reconnect with backoff</h3><p>Automatic reconnection with exponential backoff when a link drops.</p></div></div>
-        <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Change logging</h3><p>A running log of parameter changes for monitoring and debugging.</p></div></div>
-        <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Streams &amp; meters</h3><p>High-rate <code>StreamFormat</code>-aware decode driving live vertical meters, with pop-out windows.</p></div></div>
         <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Enum maps &amp; sliders</h3><p>Friendly enum labels and slider controls that honour each parameter's min/max and display factor.</p></div></div>
         <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>mDNS discovery</h3><p>Automatic discovery of providers on the local network (<code>_ember._tcp</code>).</p></div></div>
         <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Online / offline state</h3><p>Honours <code>isOnline</code> so disappearing nodes grey out instead of vanishing.</p></div></div>
-        <div class="feature"><span class="dot"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M10 3 4.5 8.5 2 6l1-1 1.5 1.5L9 2z"/></svg></span><div><h3>Safety &amp; traffic</h3><p>An opt-in lock guards against accidental edits, and a TX/RX counter shows live traffic toward the device.</p></div></div>
       </div>
     </div>
   </section>
@@ -231,45 +236,60 @@
     </div>
   </section>
 
-  <!-- ===================== Getting started ===================== -->
+  <!-- ===================== Download & run ===================== -->
   <section id="getting-started" class="alt">
     <div class="wrap">
-      <p class="eyebrow">Getting started</p>
-      <h2>Run it in a couple of minutes</h2>
-      <p class="lead">
-        Prebuilt binaries will be on the
-        <a href="https://github.com/mattlamb99/emberviewer/releases">Releases</a> page. To build from
-        source you only need a Rust toolchain.
-      </p>
+      <p class="eyebrow">Get started</p>
+      <h2>Download and run</h2>
+      <p class="lead">No build tools, no installer - grab the binary for your platform, unzip, and run.</p>
       <div class="steps">
         <div class="step">
           <div class="num">1</div>
           <div>
-            <h3>Install Rust</h3>
-            <p>Grab the toolchain from <a href="https://rustup.rs">rustup.rs</a> if you don't have it.</p>
+            <h3>Download for your platform</h3>
+            <p>From the <a href="https://github.com/mattlamb99/emberviewer/releases/latest">latest release</a>, grab the Windows <code>.zip</code> or the macOS / Linux <code>.tar.gz</code>. Every binary already embeds the web UI for server mode.</p>
           </div>
         </div>
         <div class="step">
           <div class="num">2</div>
           <div>
-            <h3>Clone the repository</h3>
-            <pre><code>git clone https://github.com/mattlamb99/emberviewer
-cd emberviewer</code></pre>
+            <h3>Run it</h3>
+            <p>Unzip and launch <code>emberviewer</code> - no install step. On Windows, SmartScreen may warn about an unsigned binary: choose <em>More info &rarr; Run anyway</em>. The Linux build needs glibc 2.35+ (Ubuntu 22.04 / Debian 12 or newer).</p>
           </div>
         </div>
         <div class="step">
           <div class="num">3</div>
           <div>
-            <h3>Build a release binary</h3>
-            <pre><code>cargo build --release</code></pre>
-            <p>The app lands in <code>target/release/</code>. Run it with <code>cargo run --release -p emberviewer</code>.</p>
+            <h3>Connect to a provider</h3>
+            <p>Add a provider to the address book by its host and port (Ember+ defaults to <code>9000</code>), then connect and browse. New to Ember+? Read the <a href="protocol.html">protocol primer</a>.</p>
+          </div>
+        </div>
+      </div>
+      <p class="aside">Want to hack on it instead? <a href="#build">Build from source</a> - it only needs a Rust toolchain.</p>
+    </div>
+  </section>
+
+  <!-- ===================== Build from source ===================== -->
+  <section id="build">
+    <div class="wrap">
+      <p class="eyebrow">For developers</p>
+      <h2>Build from source</h2>
+      <p class="lead">All you need is a <a href="https://rustup.rs">Rust toolchain</a>.</p>
+      <div class="steps">
+        <div class="step">
+          <div class="num">1</div>
+          <div>
+            <h3>Clone and build</h3>
+            <pre><code>git clone https://github.com/mattlamb99/emberviewer
+cd emberviewer
+cargo run --release -p emberviewer</code></pre>
           </div>
         </div>
         <div class="step">
-          <div class="num">4</div>
+          <div class="num">2</div>
           <div>
-            <h3>Connect to a provider</h3>
-            <p>Add a provider to the address book by its host and port (Ember+ defaults to <code>9000</code>), then connect and browse. New to Ember+? Read the <a href="protocol.html">protocol primer</a>.</p>
+            <h3>Embed the web UI (optional)</h3>
+            <p>A plain build serves a placeholder for server mode; to embed the real browser UI, build the wasm bundle first. See the <a href="https://github.com/mattlamb99/emberviewer#building">build notes</a> in the README.</p>
           </div>
         </div>
       </div>
@@ -277,7 +297,7 @@ cd emberviewer</code></pre>
   </section>
 
   <!-- ===================== Docs callout ===================== -->
-  <section id="docs">
+  <section id="docs" class="alt">
     <div class="wrap">
       <div class="callout">
         <span class="dot" style="width:46px;height:46px;border-radius:12px;background:var(--ember-soft);display:grid;place-items:center;flex:none">

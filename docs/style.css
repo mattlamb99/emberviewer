@@ -234,6 +234,8 @@ section .lead { color: var(--text-muted); margin: 0 0 32px; max-width: 660px; }
 .feature p { margin: 0; font-size: 14px; color: var(--text-muted); line-height: 1.5; }
 
 .subhead { margin: 34px 0 14px; font-size: 14px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em; }
+.subhead:first-of-type { margin-top: 8px; }
+.aside { margin: 26px 0 0; font-size: 15px; color: var(--text-muted); }
 
 /* ---------- Tested devices ---------- */
 .devices {
