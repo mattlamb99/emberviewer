@@ -13,7 +13,7 @@ const path = require('path');
 const { EmberClient, EmberLib } = require('node-emberplus');
 // Use node-emberplus's own BER reader to decode REAL values (its base-2 REAL
 // encoding leaves the exponent-length bits zero, so a naive X.690 reader can't
-// reverse it — but its matching ExtendedReader.readReal can).
+// reverse it - but its matching ExtendedReader.readReal can).
 const { ExtendedReader, EMBER_REAL } = require('node-emberplus/lib/ber');
 
 const HOST = '127.0.0.1';

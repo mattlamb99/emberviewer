@@ -17,7 +17,7 @@ use crate::net::NetCommand;
 pub const LOCK_FLASH_SECS: f64 = 0.7;
 
 /// Render `content` greyed-out and inert when `!enabled`. Returns the content's
-/// value and, when disabled, whether the user clicked the locked region — so the
+/// value and, when disabled, whether the user clicked the locked region - so the
 /// caller can flash the padlock to explain why nothing happened.
 pub fn lockable<R>(
     ui: &mut egui::Ui,
@@ -52,9 +52,9 @@ pub fn lock_toggle(ui: &mut egui::Ui, locked: &mut bool, now: f64, flash_until: 
         ui.ctx().request_repaint();
     }
     let tip = if *locked {
-        "Controls are locked against accidental changes — click to arm"
+        "Controls are locked against accidental changes - click to arm"
     } else {
-        "Editing enabled — click to lock"
+        "Editing enabled - click to lock"
     };
     if ui.add(btn).on_hover_text(tip).clicked() {
         *locked = !*locked;
@@ -114,7 +114,7 @@ pub fn meter_readout(entry: &Entry, v: f64) -> String {
 }
 
 // Tri-colour meter zones (fraction of full scale): green up to GREEN_TOP, amber
-// to AMBER_TOP, red above — a mostly-green bar with a caution band and a small
+// to AMBER_TOP, red above - a mostly-green bar with a caution band and a small
 // red headroom band at the top, the usual level-meter convention.
 const MTR_GREEN_TOP: f32 = 0.75;
 const MTR_AMBER_TOP: f32 = 0.90;

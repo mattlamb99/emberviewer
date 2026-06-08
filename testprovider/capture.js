@@ -92,7 +92,7 @@ const hex = (buf) => buf.toString('hex');
   rootRecv.forEach((b, i) => { md += `- frame[${i}] (${b.length} bytes):\n\n      ${hex(b)}\n\n`; });
   md += `Concatenated: \`${cat(rootRecv)}\`\n\n`;
 
-  md += `## 3. Child GetDirectory REQUEST — node "${childIdent}" (path ${childPath})\n\n`;
+  md += `## 3. Child GetDirectory REQUEST - node "${childIdent}" (path ${childPath})\n\n`;
   childSent.forEach((b, i) => { md += `- frame[${i}] (${b.length} bytes):\n\n      ${hex(b)}\n\n`; });
   md += `Concatenated: \`${cat(childSent)}\`\n\n`;
 

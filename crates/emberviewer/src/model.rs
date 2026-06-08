@@ -735,7 +735,7 @@ pub fn format_value(v: &Value) -> String {
 
 /// How long (egui seconds) to wait before re-requesting a label sub-tree node
 /// whose directory hasn't come back, and how many times to retry before giving
-/// up (so a genuinely empty labels node isn't polled forever — keeping device
+/// up (so a genuinely empty labels node isn't polled forever - keeping device
 /// traffic minimal).
 pub const LABEL_FETCH_RETRY_SECS: f64 = 2.0;
 pub const LABEL_FETCH_MAX_ATTEMPTS: u8 = 6;
@@ -757,8 +757,8 @@ pub struct LabelFetchStep {
 /// Embedded devices (e.g. Arkona AT300) silently drop `getDirectory` requests
 /// issued during the initial discovery burst, so a one-shot fetch can be lost
 /// forever and the matrix's labels never resolve. This retries any node that
-/// still has no children — throttled to once per [`LABEL_FETCH_RETRY_SECS`] and
-/// capped at [`LABEL_FETCH_MAX_ATTEMPTS`] — until its directory populates.
+/// still has no children - throttled to once per [`LABEL_FETCH_RETRY_SECS`] and
+/// capped at [`LABEL_FETCH_MAX_ATTEMPTS`] - until its directory populates.
 ///
 /// `state` is the node's prior (last-request time, attempts), `has_children`
 /// whether its directory has arrived, `now` the current egui time.

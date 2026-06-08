@@ -4,8 +4,8 @@
 //! (the desktop UI today; web clients later). Inbound documents/status are
 //! broadcast to every subscriber; outbound commands from any subscriber are
 //! merged into the single connection. Device-level Subscribe/Unsubscribe are
-//! reference-counted so the provider — often an embedded device with a tight
-//! connection/subscription budget — sees a single consumer no matter how many
+//! reference-counted so the provider - often an embedded device with a tight
+//! connection/subscription budget - sees a single consumer no matter how many
 //! viewers are attached. Dropping the `Hub` shuts the connection down.
 
 use std::collections::{HashMap, HashSet};
@@ -139,7 +139,7 @@ impl Subscriber {
 
 /// A shared registry of live provider connections, keyed by provider id. A
 /// [`Hub`] is created on first open and shut down once the last [`HubLease`]
-/// (desktop session or web client) drops — so the device sees one consumer no
+/// (desktop session or web client) drops - so the device sees one consumer no
 /// matter how many viewers attach. Cheap to clone (everything is shared).
 #[derive(Clone)]
 pub struct HubRegistry {
@@ -272,7 +272,7 @@ async fn run_connection(
             }),
         }
 
-        // Wait out the backoff — cancellable by shutdown or a Disconnect.
+        // Wait out the backoff - cancellable by shutdown or a Disconnect.
         tokio::select! {
             biased;
             _ = &mut shutdown_rx => { emit(NetEvent::Disconnected(None)); return; }
@@ -305,7 +305,7 @@ async fn run_session(
 ) -> SessionEnd {
     let (mut reader, mut writer) = conn.into_split_with(traffic.clone());
 
-    // Kick off discovery at the root, then restore any active subscriptions —
+    // Kick off discovery at the root, then restore any active subscriptions -
     // after a reconnect the device has forgotten them.
     if let Err(e) = writer.get_directory(&[]).await {
         emit(NetEvent::Error(e.to_string()));
@@ -340,7 +340,7 @@ async fn run_session(
                     }
                 };
                 if let Err(e) = result {
-                    // A write failure means the link is gone — drop and reconnect.
+                    // A write failure means the link is gone - drop and reconnect.
                     return SessionEnd::Dropped(e.to_string());
                 }
             }

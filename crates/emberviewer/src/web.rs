@@ -1,7 +1,7 @@
 //! The browser client: a lean egui UI that mirrors one provider at a time over
 //! the WebSocket. It reuses the shared [`TreeModel`] and command vocabulary; the
 //! heavier desktop chrome (address book, matrices, meters) is desktop-only for
-//! now — this focuses on browsing the tree and viewing/setting values.
+//! now - this focuses on browsing the tree and viewing/setting values.
 #![allow(deprecated)] // egui Panel aliases, as in `app` (migrate when settled)
 
 use std::collections::{HashMap, HashSet};
@@ -103,7 +103,7 @@ impl WebApp {
         }
     }
 
-    /// Attempt to (re)open the WebSocket — used at startup and to auto-reconnect
+    /// Attempt to (re)open the WebSocket - used at startup and to auto-reconnect
     /// after the server goes away (e.g. the desktop app was relaunched).
     fn try_reconnect(&mut self, ctx: &egui::Context, now: f64) {
         if now - self.last_reconnect < 2.0 {
@@ -155,7 +155,7 @@ impl WebApp {
                     }
                 }
                 WebEvent::AuthRejected => {
-                    self.auth_error = Some("Access denied — check the token in the URL.".into());
+                    self.auth_error = Some("Access denied - check the token in the URL.".into());
                 }
                 WebEvent::Providers(list) => self.providers = list,
                 WebEvent::AddressBook(nodes) => self.address_tree = nodes,
@@ -219,7 +219,7 @@ impl eframe::App for WebApp {
                     }
                     ui.separator();
                     // Project links. The GitHub Octocat (special_emojis::GITHUB)
-                    // and the globe (U+1F310) are both in egui's bundled fonts —
+                    // and the globe (U+1F310) are both in egui's bundled fonts -
                     // verified to render, unlike most symbol glyphs here.
                     icon_link(
                         ui,
@@ -780,7 +780,7 @@ fn param_editor(
             ui.label(format_value(v));
         }
         None => {
-            ui.weak("—");
+            ui.weak("-");
         }
     }
 }

@@ -66,7 +66,7 @@ pub mod field_flags {
 }
 
 // ---------------------------------------------------------------------------
-// RELATIVE-OID — Ember+ paths.
+// RELATIVE-OID - Ember+ paths.
 //
 // rasn has no RELATIVE-OID type, so we delegate to an OctetString carrying the
 // universal RELATIVE-OID tag (13) and do the base-128 sub-identifier codec
@@ -127,7 +127,7 @@ fn encode_base128(value: u32, out: &mut Vec<u8>) {
 }
 
 // ---------------------------------------------------------------------------
-// REAL — ASN.1 universal tag 9.
+// REAL - ASN.1 universal tag 9.
 //
 // rasn's BER codec does not support REAL, so (as with RELATIVE-OID) we delegate
 // to an OctetString carrying tag 9 and implement the content codec (X.690 §8.5)
@@ -192,7 +192,7 @@ fn signed_min_bytes(v: i64) -> Vec<u8> {
 ///
 /// Mirrors libember/node-emberplus: the exponent stored is the IEEE-754 binary
 /// exponent (`bias 1023`), and the mantissa is the 53-bit significand (implicit
-/// leading 1 included). Trailing zero bits are stripped for compactness — the
+/// leading 1 included). Trailing zero bits are stripped for compactness - the
 /// decoder re-normalises, so this is lossless.
 fn encode_real(value: f64) -> Vec<u8> {
     if value == 0.0 {
@@ -375,7 +375,7 @@ pub struct StreamDescription {
 // Parameter
 // ---------------------------------------------------------------------------
 
-/// `ParameterContents ::= SET { ... }` — all fields optional.
+/// `ParameterContents ::= SET { ... }` - all fields optional.
 #[derive(AsnType, Decode, Encode, Debug, Clone, PartialEq, Default)]
 #[rasn(set)]
 pub struct ParameterContents {
@@ -383,7 +383,7 @@ pub struct ParameterContents {
     pub identifier: Option<EmberString>,
     #[rasn(tag(explicit(1)))]
     pub description: Option<EmberString>,
-    // NB: named `value_` not `value` — a field named `value` collides with an
+    // NB: named `value_` not `value` - a field named `value` collides with an
     // internal binding in rasn's generated SET decoder.
     #[rasn(tag(explicit(2)))]
     pub value_: Option<Value>,
@@ -452,7 +452,7 @@ pub struct QualifiedParameter {
 // Node
 // ---------------------------------------------------------------------------
 
-/// `NodeContents ::= SET { ... }` — all fields optional.
+/// `NodeContents ::= SET { ... }` - all fields optional.
 #[derive(AsnType, Decode, Encode, Debug, Clone, PartialEq, Default)]
 #[rasn(set)]
 pub struct NodeContents {
@@ -745,7 +745,7 @@ pub struct QualifiedMatrix {
 // Function
 // ---------------------------------------------------------------------------
 
-/// `TupleItemDescription ::= [APPLICATION 21] IMPLICIT SEQUENCE` — one arg/result slot.
+/// `TupleItemDescription ::= [APPLICATION 21] IMPLICIT SEQUENCE` - one arg/result slot.
 #[derive(AsnType, Decode, Encode, Debug, Clone, PartialEq)]
 #[rasn(tag(application, 21))]
 pub struct TupleItemDescription {
@@ -887,7 +887,7 @@ pub struct InvocationResult {
     pub result: Option<ValueTuple>,
 }
 
-/// `Root ::= [APPLICATION 0] CHOICE { ... }` — the outermost document wrapper.
+/// `Root ::= [APPLICATION 0] CHOICE { ... }` - the outermost document wrapper.
 ///
 /// The `[APPLICATION 0]` tag is explicit (it wraps a CHOICE). Every Glow message
 /// on the wire begins here.
@@ -917,7 +917,7 @@ impl Root {
     /// Build a `getDirectory` request for the node at `path`.
     ///
     /// An empty path requests the root; otherwise we send a `QualifiedNode` at
-    /// `path` whose `children` carry the `getDirectory` command — the addressing
+    /// `path` whose `children` carry the `getDirectory` command - the addressing
     /// scheme captured from real providers.
     pub fn get_directory_at(path: &[u32]) -> Self {
         let command = Element::Command(Command::get_directory(Some(field_flags::ALL)));
@@ -1065,7 +1065,7 @@ pub fn decode_roots(bytes: &[u8]) -> Vec<Result<Root, rasn::error::DecodeError>>
                 i = end;
             }
             _ => {
-                // Boundary undeterminable — decode whatever remains, then stop.
+                // Boundary undeterminable - decode whatever remains, then stop.
                 out.push(rasn::ber::decode(&bytes[i..]));
                 break;
             }

@@ -1030,7 +1030,7 @@ impl App {
                         );
                     }
                     // Only while dragging a folder/provider, offer a target to move
-                    // it out to the top level — shown as a highlighted drop area
+                    // it out to the top level - shown as a highlighted drop area
                     // rather than always-present text, and hidden otherwise.
                     if egui::DragAndDrop::has_payload_of_type::<DragPayload>(ui.ctx()) {
                         ui.add_space(8.0);
@@ -1585,7 +1585,7 @@ impl App {
                 if ui
                     .checkbox(
                         &mut self.settings.server_open_lan,
-                        "Open on LAN (no token — anyone can control)",
+                        "Open on LAN (no token - anyone can control)",
                     )
                     .changed()
                 {
@@ -1891,7 +1891,7 @@ impl App {
             // Borderless floating window: no OS title bar / min-max-close chrome.
             // We provide drag-to-move and a right-click menu (close / pin) instead.
             let mut builder = egui::ViewportBuilder::default()
-                .with_title(format!("{title} — {dev_name}"))
+                .with_title(format!("{title} - {dev_name}"))
                 .with_decorations(false)
                 .with_resizable(true)
                 .with_inner_size([150.0, 300.0])
@@ -1914,7 +1914,7 @@ impl App {
                     let mh = (full_h - readout_h - 4.0).max(50.0);
                     // Centre a fixed-width column (labels + meter) as one block so
                     // the meter and the readout beneath it stay aligned at any
-                    // window width — `vertical_centered` alone would let the meter
+                    // window width - `vertical_centered` alone would let the meter
                     // row span full width (left-aligned) while centring the readout.
                     const SIDE_W: f32 = 16.0;
                     const METER_W: f32 = 40.0;
@@ -1983,7 +1983,7 @@ impl App {
                     });
 
                     let area = ui.max_rect();
-                    // Faint × (top-right) to close — drawn, not a font glyph (those
+                    // Faint × (top-right) to close - drawn, not a font glyph (those
                     // tofu in the default font). Brightens on hover.
                     let x_rect = egui::Rect::from_min_size(
                         egui::pos2(area.right() - 17.0, area.top() + 1.0),
@@ -2007,7 +2007,7 @@ impl App {
                         close = true;
                     }
 
-                    // Bottom-right resize grip — borderless windows have no OS
+                    // Bottom-right resize grip - borderless windows have no OS
                     // resize border, so drag this to set the window's inner size.
                     let g_rect = egui::Rect::from_min_size(
                         area.right_bottom() - egui::vec2(14.0, 14.0),
@@ -2256,8 +2256,8 @@ fn render_entry(
         // Eagerly fetch a matrix's directory and label/param sub-trees as soon as
         // the node is *visible* (not only when its grid is open). The label subtree
         // is several getDirectory levels deep (basePath → targets/sources → string
-        // params), so kicking it off early — and on every frame the matrix is in
-        // view, regardless of expand state — lets the multi-phase fetch finish even
+        // params), so kicking it off early - and on every frame the matrix is in
+        // view, regardless of expand state - lets the multi-phase fetch finish even
         // on slow devices, instead of stalling if the grid is collapsed mid-fetch.
         if let Some(m) = &entry.matrix {
             if session.label_fetch.insert(entry.path.clone()) {
@@ -2488,7 +2488,7 @@ fn render_parameter(
                     }
                     vresp.context_menu(|ui| param_menu(ui, session, entry, logging, meterable));
                 } else {
-                    ui.weak("—");
+                    ui.weak("-");
                 }
             });
         })
@@ -2855,7 +2855,7 @@ fn param_label(entry: &crate::model::Entry, opts: &RenderOpts) -> String {
 
 fn append_description(base: String, entry: &crate::model::Entry, opts: &RenderOpts) -> String {
     match (opts.show_descriptions, &entry.description) {
-        (true, Some(d)) if !d.is_empty() => format!("{base}  —  {d}"),
+        (true, Some(d)) if !d.is_empty() => format!("{base} - {d}"),
         _ => base,
     }
 }

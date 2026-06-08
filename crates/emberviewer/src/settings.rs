@@ -111,7 +111,7 @@ pub struct Settings {
     /// (ignored in open-LAN mode). Empty = generate one when first enabled.
     #[serde(default)]
     pub server_token: String,
-    /// Skip the token check — anyone on the LAN can view/control. Use with care.
+    /// Skip the token check - anyone on the LAN can view/control. Use with care.
     #[serde(default)]
     pub server_open_lan: bool,
     /// Web clients may view but not change values/routes/invoke.

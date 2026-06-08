@@ -71,7 +71,7 @@ pub enum NetEvent {
 
 /// UI-side handle to a running connection: the desktop's [`HubLease`] on the
 /// shared per-provider Hub. Dropping it releases the desktop's view (and shuts
-/// the connection down if no other viewer — e.g. a browser — holds it).
+/// the connection down if no other viewer - e.g. a browser - holds it).
 #[cfg(not(target_arch = "wasm32"))]
 pub struct ConnectionHandle {
     lease: HubLease,

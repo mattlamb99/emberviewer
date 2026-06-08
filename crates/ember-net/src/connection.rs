@@ -161,7 +161,7 @@ impl Connection {
     }
 
     /// Like [`into_split`](Self::into_split) but sharing `traffic`, so the caller
-    /// (the GUI) can read byte/frame totals — and persist them across reconnects.
+    /// (the GUI) can read byte/frame totals - and persist them across reconnects.
     pub fn into_split_with(self, traffic: Arc<Traffic>) -> (ProviderReader, ProviderWriter) {
         let (read, write) = self.stream.into_split();
         (
@@ -182,7 +182,7 @@ pub enum Inbound {
     /// One or more decoded Glow documents from a single message, alongside the
     /// original BER payload they were decoded from. The raw bytes are kept so a
     /// consumer (the server) can forward them verbatim to a remote viewer, which
-    /// then decodes byte-identically — re-encoding `roots` would risk a lossy or
+    /// then decodes byte-identically - re-encoding `roots` would risk a lossy or
     /// asymmetric result for vendor extensions the tolerant decoder preserves but
     /// the encoder can't reproduce exactly.
     Documents { roots: Vec<Root>, raw: Vec<u8> },
@@ -260,7 +260,7 @@ impl ProviderReader {
                                 raw: payload,
                             }));
                         }
-                        // Nothing decoded — keep reading.
+                        // Nothing decoded - keep reading.
                     }
                     Ok(Incoming::KeepAliveRequest) => {
                         return Ok(Some(Inbound::KeepAliveRequest));

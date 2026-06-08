@@ -6,7 +6,7 @@
 //!
 //! Constants verified against `libs101/Headers/s101/` in the Lawo/ember-plus repo.
 //! The CRC is the standard CRC-16/X-25 (poly 0x1021 reflected, init 0xFFFF,
-//! xorout 0xFFFF), whose residue is `0xF0B8` — matching `RxFrame.cs`.
+//! xorout 0xFFFF), whose residue is `0xF0B8` - matching `RxFrame.cs`.
 
 use thiserror::Error;
 
@@ -71,7 +71,7 @@ pub mod package_flag {
     pub const LAST: u8 = 0x40;
     /// Package carries no payload bytes.
     pub const EMPTY: u8 = 0x20;
-    /// First and last — a self-contained payload.
+    /// First and last - a self-contained payload.
     pub const SINGLE: u8 = FIRST | LAST;
 }
 
@@ -212,7 +212,7 @@ fn frame_ember_package(payload: &[u8], flags: u8) -> Vec<u8> {
 pub enum Incoming {
     /// A complete, reassembled BER/Glow payload.
     EmberPayload(Vec<u8>),
-    /// Peer asked us to keep the connection alive — reply with a response.
+    /// Peer asked us to keep the connection alive - reply with a response.
     KeepAliveRequest,
     /// Peer answered our keep-alive request.
     KeepAliveResponse,
@@ -242,7 +242,7 @@ impl FrameDecoder {
     /// Consume `bytes`, returning every complete message decoded so far.
     ///
     /// A CRC or framing error on one frame is surfaced but does not poison the
-    /// decoder — subsequent frames still decode.
+    /// decoder - subsequent frames still decode.
     pub fn push(&mut self, bytes: &[u8]) -> Vec<Result<Incoming, S101Error>> {
         let mut results = Vec::new();
         for &b in bytes {
@@ -340,7 +340,7 @@ mod tests {
     #[test]
     fn crc16_residue() {
         // Running the (init 0xFFFF, no xorout) register over message+CRC must
-        // land on the X-25 residue 0xF0B8 — the check RxFrame.cs performs.
+        // land on the X-25 residue 0xF0B8 - the check RxFrame.cs performs.
         let msg = [SLOT, MSG_EMBER, Command::KeepAliveRequest as u8, VERSION];
         let crc = crc16(&msg);
         let mut buf = msg.to_vec();
@@ -440,7 +440,7 @@ mod tests {
     fn corrupted_crc_is_reported() {
         let mut frame = encode_keepalive_request();
         // Flip a low bit of the msgType byte so it stays a normal (non-delimiter,
-        // non-escape) byte but changes the message — forcing a CRC mismatch.
+        // non-escape) byte but changes the message - forcing a CRC mismatch.
         frame[2] ^= 0x01;
         let mut dec = FrameDecoder::new();
         let out = dec.push(&frame);
