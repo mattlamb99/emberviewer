@@ -120,6 +120,13 @@ pub struct Settings {
     /// Optional path to append parameter-change logs to (empty = window only).
     #[serde(default)]
     pub log_file: String,
+    /// On launch, check GitHub for a newer release (at most once per 24h). This
+    /// is the only thing that contacts a server other than the Ember+ devices.
+    #[serde(default = "default_true")]
+    pub check_for_updates: bool,
+    /// Unix seconds of the last update check, to throttle it to once per day.
+    #[serde(default)]
+    pub last_update_check: u64,
     /// Provider ids that were connected at last shutdown (for `ConnectLast`).
     #[serde(default)]
     pub last_connected: Vec<Id>,
@@ -144,6 +151,8 @@ impl Default for Settings {
             server_open_lan: false,
             server_read_only: false,
             log_file: String::new(),
+            check_for_updates: true,
+            last_update_check: 0,
             last_connected: Vec::new(),
         }
     }

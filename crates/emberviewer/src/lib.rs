@@ -18,6 +18,8 @@ mod net;
 mod server;
 #[cfg(not(target_arch = "wasm32"))]
 mod settings;
+#[cfg(not(target_arch = "wasm32"))]
+mod update;
 #[cfg(target_arch = "wasm32")]
 mod web;
 #[cfg(target_arch = "wasm32")]

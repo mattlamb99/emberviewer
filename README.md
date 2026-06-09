@@ -1,8 +1,7 @@
 # emberviewer
 
-A cross-platform desktop viewer for the **Ember+** control protocol (Lawo) - an open, maintained
-replacement for Lawo's closed-source, Windows-only `EmberPlusView.exe`. One Rust codebase for
-**Windows, macOS and Linux**.
+A cross-platform desktop viewer for the **Ember+** control protocol (Lawo) - an open alternative to
+Lawo's Windows-only `EmberPlusView.exe`, from one Rust codebase for **Windows, macOS and Linux**.
 
 Keep an address book of providers, browse a provider's tree, view & set parameters with live
 subscriptions, route matrices, invoke functions, and watch streamed meters - plus a
@@ -15,10 +14,9 @@ on your network.
 
 ## Why
 
-`EmberPlusView.exe` is the de-facto tool for Ember+, but its source was never published
-([Lawo/ember-plus#59](https://github.com/Lawo/ember-plus/issues/59)), it's Windows-binary-only, and
-it hasn't been updated since 2022. emberviewer reimplements an equivalent - cross-platform, from the
-protocol up, with quality-of-life additions.
+`EmberPlusView.exe` has been the de-facto Ember+ tool for years and does the job well. emberviewer
+offers an open, cross-platform alternative: the same browsing, get/set, matrices, functions and
+streams, rebuilt from the protocol up, with a few quality-of-life additions.
 
 ## Features
 
@@ -32,6 +30,10 @@ protocol up, with quality-of-life additions.
 - **Server mode** - serve the UI to phones/laptops on your LAN; token-protected, with read-only and open-LAN modes (see below).
 - **Discovery** - find providers via mDNS (`_ember._tcp`).
 - **More** - per-parameter change logging (window or file), dark/light theme, an opt-in safety lock against accidental edits, a TX/RX traffic counter, and robust transport (keep-alive, reconnect with backoff, multi-package S101 reassembly).
+
+## Update check
+
+On launch emberviewer checks GitHub once a day for a newer release and shows an "Update available" note if there is one. This is the only thing it contacts besides your Ember+ devices: it's a normal HTTPS request to GitHub's API (so GitHub sees your IP), and it sends nothing about your devices. Turn it off in *Options -> "Check for updates on startup"*.
 
 ## Server mode
 
