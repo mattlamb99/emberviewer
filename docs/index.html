@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>emberviewer - A free, cross-platform Ember+ viewer</title>
-  <meta name="description" content="emberviewer is a free, open-source, cross-platform desktop viewer for the Ember+ control protocol (Lawo) - a maintained replacement for the closed-source, Windows-only EmberPlusView.exe." />
+  <meta name="description" content="emberviewer is a free, open-source, cross-platform desktop viewer for the Ember+ control protocol (Lawo) - an open alternative to the Windows-only EmberPlusView.exe." />
   <meta name="color-scheme" content="light dark" />
   <!-- Inline SVG favicon (orange ember spark) - no external requests -->
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath fill='%23d9772b' d='M16 2c2 6-3 7-3 12a6 6 0 0 0 12 0c0-2-1-4-2-5 3 2 5 5 5 9a9 9 0 1 1-18 0c0-7 6-9 6-16z'/%3E%3C/svg%3E" />
@@ -52,7 +52,7 @@
       <p class="tagline">A free, cross-platform Ember+ viewer</p>
       <p class="blurb">
         Browse, monitor and control <strong>Ember+</strong> devices from one clean desktop app
-        on Windows, macOS and Linux. An open, maintained replacement for Lawo's closed-source
+        on Windows, macOS and Linux. An open, cross-platform alternative to Lawo's
         <code>EmberPlusView.exe</code>.
       </p>
       <div class="cta">
@@ -110,24 +110,25 @@
   <section id="why" class="alt">
     <div class="wrap">
       <p class="eyebrow">Why it exists</p>
-      <h2>The EmberPlusView replacement, finally open</h2>
+      <h2>An open, cross-platform alternative</h2>
       <p class="lead">
-        For years <code>EmberPlusView.exe</code> has been the de-facto tool for poking at Ember+
-        devices - but it has real limitations. emberviewer rebuilds an equivalent from the
-        protocol up, in the open.
+        <code>EmberPlusView.exe</code> has been the go-to Ember+ tool for years and does the job
+        well. emberviewer covers the same ground - browsing, get/set, matrices, functions and
+        streams - rebuilt from the protocol up, for anyone who'd like an option that is open,
+        cross-platform and actively developed.
       </p>
       <div class="why-grid">
         <div class="why-card">
-          <h3>Closed source</h3>
-          <p>The original viewer's source was never published, so it can't be fixed, audited or extended by the community.</p>
+          <h3>Open source</h3>
+          <p>emberviewer is MIT-licensed and developed in the open, so anyone can read it, audit it, or build on it.</p>
         </div>
         <div class="why-card">
-          <h3>Windows-only</h3>
-          <p>It ships as a Windows binary alone. emberviewer runs natively on Windows, macOS and Linux from a single codebase.</p>
+          <h3>Cross-platform</h3>
+          <p>A single Rust codebase runs natively on Windows, macOS and Linux.</p>
         </div>
         <div class="why-card">
-          <h3>Unmaintained</h3>
-          <p>No updates since 2022. emberviewer is actively developed and MIT-licensed, so it can keep moving.</p>
+          <h3>Actively developed</h3>
+          <p>It's under active development, so it keeps pace with new devices and feedback from the field.</p>
         </div>
       </div>
     </div>
@@ -265,6 +266,7 @@
           </div>
         </div>
       </div>
+      <p class="aside"><strong>Update check:</strong> on launch emberviewer asks GitHub once a day whether a newer release exists, and shows an "Update available" note if so. It's a normal HTTPS request (so GitHub sees your IP) and sends nothing about your devices. Turn it off any time in <em>Options &rarr; "Check for updates on startup"</em>.</p>
       <p class="aside">Want to hack on it instead? <a href="#build">Build from source</a> - it only needs a Rust toolchain.</p>
     </div>
   </section>
