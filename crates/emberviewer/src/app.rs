@@ -197,6 +197,10 @@ pub struct App {
     catalog: server::Catalog,
     /// Running web server, when server mode is enabled.
     server: Option<ServerHandle>,
+    /// Latest result of the GitHub update check (shown in the menu bar / About).
+    update: crate::update::UpdateStatus,
+    /// Receiver for an in-flight update check (drained each frame).
+    update_rx: Option<std::sync::mpsc::Receiver<crate::update::UpdateStatus>>,
 }
 
 /// The project's warm-orange brand accent.
@@ -322,12 +326,51 @@ impl App {
             hubs,
             catalog: Arc::new(Mutex::new(server::CatalogData::default())),
             server: None,
+            update: crate::update::UpdateStatus::Idle,
+            update_rx: None,
         };
         // The theme is applied from within `ui()` (eframe overrides visuals set
         // here during construction, which is why the startup theme didn't stick).
         app.apply_startup_mode(&cc.egui_ctx.clone());
         app.sync_server(); // resume server mode if it was enabled at last shutdown
+        app.maybe_check_for_updates(false); // once-per-day GitHub release check
         app
+    }
+
+    /// Kick off a GitHub release check if enabled. `force` (the About dialog's
+    /// "Check now") bypasses both the opt-out and the 24h throttle.
+    fn maybe_check_for_updates(&mut self, force: bool) {
+        if self.update_rx.is_some() {
+            return; // a check is already in flight
+        }
+        if !force {
+            if !self.settings.check_for_updates {
+                return;
+            }
+            const DAY: u64 = 24 * 60 * 60;
+            if now_unix().saturating_sub(self.settings.last_update_check) < DAY {
+                return;
+            }
+        }
+        self.settings.last_update_check = now_unix();
+        let _ = self.settings.save();
+        self.update = crate::update::UpdateStatus::Checking;
+        // `EMBERVIEWER_UPDATE_AS_VERSION` pretends the app is an older version, so
+        // the "update available" UI can be exercised without shipping a release.
+        let current = std::env::var("EMBERVIEWER_UPDATE_AS_VERSION")
+            .unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_string());
+        self.update_rx = Some(crate::update::spawn_check(current));
+    }
+
+    /// Drain an in-flight update check (called each frame).
+    fn poll_update_check(&mut self, ctx: &egui::Context) {
+        if let Some(rx) = &self.update_rx {
+            if let Ok(status) = rx.try_recv() {
+                self.update = status;
+                self.update_rx = None;
+                ctx.request_repaint();
+            }
+        }
     }
 
     /// Auto-connect providers per the configured startup mode.
@@ -800,12 +843,17 @@ fn fmt_bitrate(bytes_s: f64) -> String {
     }
 }
 
-/// Current wall-clock time as `HH:MM:SS` (UTC).
-fn timestamp() -> String {
-    let secs = std::time::SystemTime::now()
+/// Seconds since the Unix epoch (0 if the clock is before it).
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .unwrap_or(0)
+}
+
+/// Current wall-clock time as `HH:MM:SS` (UTC).
+fn timestamp() -> String {
+    let secs = now_unix();
     format!(
         "{:02}:{:02}:{:02}",
         (secs / 3600) % 24,
@@ -831,6 +879,7 @@ impl eframe::App for App {
         self.update_traffic(ctx.input(|i| i.time), &ctx);
         self.process_pulses(&ctx);
         self.poll_discovery(&ctx);
+        self.poll_update_check(&ctx);
         self.popped_meters(&ctx);
 
         egui::TopBottomPanel::top("menubar").show_inside(ui, |ui| {
@@ -873,6 +922,32 @@ impl eframe::App for App {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.selectable_label(self.show_about, "About").clicked() {
                         self.show_about = !self.show_about;
+                    }
+                    // Accent "Update available" chip (just left of About) when a
+                    // newer release exists; clicking it opens the release page.
+                    if let crate::update::UpdateStatus::Available { version, url } =
+                        self.update.clone()
+                    {
+                        ui.separator();
+                        let resp = ui
+                            .horizontal(|ui| {
+                                paint_dot(ui, ACCENT);
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new("Update available")
+                                            .color(ACCENT)
+                                            .strong(),
+                                    )
+                                    .sense(egui::Sense::click()),
+                                )
+                            })
+                            .inner
+                            .on_hover_text(format!(
+                                "emberviewer {version} is available - click to download"
+                            ));
+                        if resp.clicked() {
+                            ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+                        }
                     }
                     ui.separator();
                     // Safety padlock: lock/arm the value/route/invoke controls.
@@ -1482,6 +1557,16 @@ impl App {
                     .changed();
                 changed |= ui
                     .checkbox(
+                        &mut self.settings.check_for_updates,
+                        "Check for updates on startup",
+                    )
+                    .on_hover_text(
+                        "Once a day on launch, contacts GitHub to see if a newer release \
+                         exists. Sends nothing about your devices.",
+                    )
+                    .changed();
+                changed |= ui
+                    .checkbox(
                         &mut self.settings.matrix_targets_on_top,
                         "Matrix: targets on top (else sources on top)",
                     )
@@ -1646,7 +1731,10 @@ impl App {
         if !self.show_about {
             return;
         }
+        use crate::update::UpdateStatus;
         let mut open = self.show_about;
+        let status = self.update.clone();
+        let mut check_now = false;
         egui::Window::new("About")
             .open(&mut open)
             .resizable(false)
@@ -1660,6 +1748,43 @@ impl App {
                 ui.add_space(6.0);
                 ui.separator();
                 ui.add_space(6.0);
+
+                // Update status + a manual "Check for updates".
+                match &status {
+                    UpdateStatus::Available { version, url } => {
+                        ui.horizontal(|ui| {
+                            paint_dot(ui, ACCENT);
+                            ui.label(
+                                egui::RichText::new(format!("Update available: {version}"))
+                                    .color(ACCENT)
+                                    .strong(),
+                            );
+                        });
+                        ui.hyperlink_to("Download the latest release", url);
+                    }
+                    UpdateStatus::UpToDate => {
+                        ui.label("You're on the latest version.");
+                    }
+                    UpdateStatus::Checking => {
+                        ui.label("Checking for updates…");
+                    }
+                    UpdateStatus::Failed(e) => {
+                        ui.label(egui::RichText::new("Couldn't check for updates.").weak())
+                            .on_hover_text(e.as_str());
+                    }
+                    UpdateStatus::Idle => {}
+                }
+                let checking = matches!(status, UpdateStatus::Checking);
+                if ui
+                    .add_enabled(!checking, egui::Button::new("Check for updates"))
+                    .clicked()
+                {
+                    check_now = true;
+                }
+
+                ui.add_space(6.0);
+                ui.separator();
+                ui.add_space(6.0);
                 ui.hyperlink_to(
                     "GitHub repository",
                     "https://github.com/mattlamb99/emberviewer",
@@ -1667,6 +1792,9 @@ impl App {
                 ui.hyperlink_to("Website / docs", "https://mattlamb99.github.io/emberviewer");
             });
         self.show_about = open;
+        if check_now {
+            self.maybe_check_for_updates(true);
+        }
     }
 
     /// Popup showing a matrix signal's parameters (gain, type, name, …), opened

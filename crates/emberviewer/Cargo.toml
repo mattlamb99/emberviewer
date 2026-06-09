@@ -38,6 +38,9 @@ qrcode = { version = "0.14", default-features = false }
 # (Linux) talks to the desktop portal over DBus - no GTK build dependency - and is
 # async; Windows/macOS use their built-in backends. We drive it on the tokio runtime.
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal", "pollster"] }
+# Update check: a single HTTPS GET to the GitHub Releases API. rustls (not the
+# system OpenSSL) keeps the binary self-contained and portable across distros.
+ureq = { version = "2", default-features = false, features = ["tls"] }
 
 # Wasm browser client only.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
