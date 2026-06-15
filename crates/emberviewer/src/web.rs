@@ -161,6 +161,19 @@ impl WebApp {
                 WebEvent::AddressBook(nodes) => self.address_tree = nodes,
                 WebEvent::Status { id, status } => {
                     if self.current == Some(id) {
+                        // A `Connecting` status means the shared connection is moving
+                        // to a new address - drop the old device's tree and await
+                        // fresh documents. Keep `subscribed`: the hub replays
+                        // subscriptions to the new endpoint, so ref-counts stay valid.
+                        if matches!(status, WireStatus::Connecting) {
+                            self.tree = TreeModel::new();
+                            self.requested.clear();
+                            self.matrix_fetch.clear();
+                            self.invocations.clear();
+                            self.meter_range.clear();
+                            self.selected = None;
+                            self.signal_params = None;
+                        }
                         self.status = Some(status);
                     }
                 }
@@ -822,7 +835,11 @@ fn fetch_matrix(
     }
     let mut pending = false;
     for base in &m.label_paths {
-        pending |= fetch_subtree(tree, base, mfetch, now, commands);
+        // basePath may be absolute or relative-to-parent depending on the
+        // provider; fetch each interpretation that points at a real node.
+        for cand in crate::model::fetchable_label_bases(tree, path, base) {
+            pending |= fetch_subtree(tree, &cand, mfetch, now, commands);
+        }
     }
     if let Some(ploc) = &m.params_location {
         pending |= fetch_subtree(tree, ploc, mfetch, now, commands);

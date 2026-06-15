@@ -115,6 +115,10 @@ pub fn event_status(ev: &NetEvent) -> Option<WireStatus> {
             secs: *retry_in_secs,
             reason: reason.clone(),
         },
+        // The shared connection is moving to a new address. Reuse the otherwise
+        // unsent `Connecting` status as the browser's "reset and await the new
+        // endpoint's tree" signal.
+        NetEvent::Retargeted => WireStatus::Connecting,
         NetEvent::Disconnected(reason) => WireStatus::Disconnected {
             reason: reason.clone(),
         },

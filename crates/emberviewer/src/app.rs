@@ -18,8 +18,8 @@ use crate::net::{ConnectionHandle, NetCommand, NetEvent};
 use crate::server::{self, ServerHandle};
 use crate::settings::{OrderBy, Settings, StartupMode};
 use crate::widgets::{
-    display_value, draw_vmeter, format_suffix, is_meterable, lock_toggle, lockable, meter_range,
-    meter_readout, render_function, value_f64, LOCK_FLASH_SECS,
+    display_value, draw_indicator, draw_vmeter, format_suffix, is_meterable, lock_toggle, lockable,
+    meter_range, meter_readout, render_function, value_f64, LOCK_FLASH_SECS,
 };
 
 /// State for one open provider connection.
@@ -81,7 +81,8 @@ struct TrafficRate {
     tx_pkt_s: f64,
 }
 
-/// A meter popped into its own always-pinnable window.
+/// A parameter popped into its own always-pinnable window: a meter for numeric
+/// values, or a red/green indicator light for booleans (chosen by value type).
 struct PoppedMeter {
     path: Vec<u32>,
     always_on_top: bool,
@@ -590,6 +591,14 @@ impl App {
                             secs: retry_in_secs,
                             reason,
                         };
+                    }
+                    NetEvent::Retargeted => {
+                        // The endpoint changed: drop the old device's tree and wait
+                        // for the new one. Keep `subscribed` - the hub replays
+                        // subscriptions to the new endpoint, so the ref-counts stay
+                        // consistent.
+                        session.status = Status::Connecting;
+                        session.tree = TreeModel::new();
                     }
                     NetEvent::Disconnected(reason) => {
                         session.status =
@@ -1384,25 +1393,29 @@ impl App {
             .resizable(false)
             .open(&mut open)
             .show(ctx, |ui| {
+                let mut submit = false;
                 egui::Grid::new("addgrid").num_columns(2).show(ui, |ui| {
                     ui.label("Name");
                     ui.text_edit_singleline(&mut self.add.name);
                     ui.end_row();
                     ui.label("Host");
-                    ui.text_edit_singleline(&mut self.add.host);
+                    let host = ui.text_edit_singleline(&mut self.add.host);
                     ui.end_row();
                     ui.label("Port");
-                    ui.text_edit_singleline(&mut self.add.port);
+                    let port = ui.text_edit_singleline(&mut self.add.port);
                     ui.end_row();
+                    // Enter in the host or port field commits, like the Add/Save button.
+                    submit = (host.lost_focus() || port.lost_focus())
+                        && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 });
                 ui.separator();
                 ui.horizontal(|ui| {
                     let valid = !self.add.host.trim().is_empty();
                     let save_label = if editing.is_some() { "Save" } else { "Add" };
-                    if ui
+                    let clicked = ui
                         .add_enabled(valid, egui::Button::new(save_label))
-                        .clicked()
-                    {
+                        .clicked();
+                    if (clicked || submit) && valid {
                         let port = self.add.port.trim().parse().unwrap_or(DEFAULT_PORT);
                         let host = self.add.host.trim().to_string();
                         let name = if self.add.name.trim().is_empty() {
@@ -1412,11 +1425,26 @@ impl App {
                         };
                         match editing {
                             Some(id) => {
+                                let new_addr = format!("{host}:{port}");
+                                let addr_changed = self
+                                    .book
+                                    .find_provider(id)
+                                    .is_some_and(|p| format!("{}:{}", p.host, p.port) != new_addr);
                                 self.book
                                     .update_provider(id, name.clone(), host, port, None);
-                                // Reflect a new display name on an open tab.
                                 if let Some(s) = self.sessions.get_mut(&id) {
                                     s.name = name;
+                                    if addr_changed {
+                                        s.addr = new_addr.clone();
+                                    }
+                                }
+                                if addr_changed {
+                                    // Move the shared connection (this desktop and
+                                    // any browsers) to the new endpoint in place, so
+                                    // every viewer of this provider stays on the same
+                                    // target. The hub emits Retargeted, which resets
+                                    // each viewer's now-stale tree.
+                                    self.hubs.retarget(id, new_addr);
                                 }
                             }
                             None => {
@@ -1998,7 +2026,16 @@ impl App {
             let Some(entry) = session.tree.get(&path).cloned() else {
                 continue;
             };
-            let range = meter_range(&entry, &mut session.meter_range);
+            // A boolean pops out as an indicator light; anything numeric as a meter.
+            let bool_value = match &entry.value {
+                Some(Value::Boolean(b)) => Some(*b),
+                _ => None,
+            };
+            let range = if bool_value.is_none() {
+                meter_range(&entry, &mut session.meter_range)
+            } else {
+                (0.0, 1.0)
+            };
             let value = entry.value.as_ref().and_then(value_f64);
             let title = entry.label();
             let path_str = path
@@ -2038,7 +2075,11 @@ impl App {
                 egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
                     let color = ui.visuals().text_color();
                     let full_h = ui.available_height();
-                    let readout_h = if value.is_some() { 22.0 } else { 0.0 };
+                    let readout_h = if value.is_some() || bool_value.is_some() {
+                        22.0
+                    } else {
+                        0.0
+                    };
                     let mh = (full_h - readout_h - 4.0).max(50.0);
                     // Centre a fixed-width column (labels + meter) as one block so
                     // the meter and the readout beneath it stay aligned at any
@@ -2056,12 +2097,20 @@ impl App {
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = GAP;
                                 meter_side_label(ui, SIDE_W, mh, &left_text, color);
-                                draw_vmeter(ui, value, range, METER_W, mh);
+                                if let Some(on) = bool_value {
+                                    draw_indicator(ui, Some(on), METER_W, mh);
+                                } else {
+                                    draw_vmeter(ui, value, range, METER_W, mh);
+                                }
                                 meter_side_label(ui, SIDE_W, mh, &right_text, color);
                             });
                             if let Some(v) = value {
                                 ui.vertical_centered(|ui| {
                                     ui.label(meter_readout(&entry, v));
+                                });
+                            } else if let Some(on) = bool_value {
+                                ui.vertical_centered(|ui| {
+                                    ui.label(if on { "true" } else { "false" });
                                 });
                             }
                         });
@@ -2393,7 +2442,12 @@ fn render_entry(
             }
             let mut pending = false;
             for base in m.label_paths.clone() {
-                pending |= fetch_label_subtree(session, &base, now, commands);
+                // basePath may be absolute or relative-to-parent depending on the
+                // provider; fetch each interpretation that points at a real node.
+                let cands = crate::model::fetchable_label_bases(&session.tree, &entry.path, &base);
+                for cand in cands {
+                    pending |= fetch_label_subtree(session, &cand, now, commands);
+                }
             }
             if let Some(ploc) = m.params_location.clone() {
                 pending |= fetch_label_subtree(session, &ploc, now, commands);
@@ -2515,14 +2569,24 @@ fn param_menu(
         }
         ui.close();
     }
-    if meterable && ui.button("Pop out meter").clicked() {
-        if !session.popped.iter().any(|p| p.path == entry.path) {
-            session.popped.push(PoppedMeter {
-                path: entry.path.clone(),
-                always_on_top: false,
-            });
+    let is_bool = matches!(entry.value, Some(Value::Boolean(_)));
+    let pop_label = if is_bool {
+        Some("Pop out boolean")
+    } else if meterable {
+        Some("Pop out meter")
+    } else {
+        None
+    };
+    if let Some(label) = pop_label {
+        if ui.button(label).clicked() {
+            if !session.popped.iter().any(|p| p.path == entry.path) {
+                session.popped.push(PoppedMeter {
+                    path: entry.path.clone(),
+                    always_on_top: false,
+                });
+            }
+            ui.close();
         }
-        ui.close();
     }
 }
 

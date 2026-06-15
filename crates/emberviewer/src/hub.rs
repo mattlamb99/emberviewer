@@ -31,8 +31,13 @@ const MAX_BACKOFF_SECS: u64 = 30;
 
 /// A message from a subscriber to the connection task.
 enum HubMsg {
-    Cmd { id: SubscriberId, cmd: NetCommand },
+    Cmd {
+        id: SubscriberId,
+        cmd: NetCommand,
+    },
     Drop(SubscriberId),
+    /// Reconnect to a new address (the provider's host:port was edited).
+    Retarget(String),
 }
 
 /// Owns one provider connection and fans it out to [`Subscriber`]s.
@@ -80,6 +85,12 @@ impl Hub {
     /// Current cumulative byte/frame totals for this provider's socket.
     pub fn traffic_snapshot(&self) -> TrafficSnapshot {
         self.traffic.snapshot()
+    }
+
+    /// Move this connection to a new address: the task drops its current socket
+    /// and reconnects there, keeping every subscriber attached.
+    pub fn retarget(&self, addr: String) {
+        let _ = self.msg_tx.send(HubMsg::Retarget(addr));
     }
 
     /// Attach a new subscriber (the desktop UI, or a web client).
@@ -172,6 +183,16 @@ impl HubRegistry {
         let sub = hub.subscribe();
         HubLease { _hub: hub, sub }
     }
+
+    /// Retarget the live hub for `id` (if any) to `addr`, so all its viewers move
+    /// to the new endpoint together. A no-op when nothing is connected to `id`
+    /// (the next [`open`](Self::open) will simply use the new address).
+    pub fn retarget(&self, id: u64, addr: String) {
+        let map = self.inner.lock().unwrap();
+        if let Some(hub) = map.get(&id).and_then(Weak::upgrade) {
+            hub.retarget(addr);
+        }
+    }
 }
 
 /// A viewer's lease on a shared [`Hub`]: keeps the connection alive while held,
@@ -213,11 +234,13 @@ enum SessionEnd {
     UserDisconnect,
     Shutdown,
     Dropped(String),
+    /// Reconnect immediately to a new address (the provider was retargeted).
+    Retarget(String),
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn run_connection(
-    addr: String,
+    mut addr: String,
     mut msg_rx: mpsc::UnboundedReceiver<HubMsg>,
     evt_tx: broadcast::Sender<Arc<NetEvent>>,
     ctx: egui::Context,
@@ -264,6 +287,14 @@ async fn run_connection(
                         retry_in_secs: backoff,
                         reason,
                     }),
+                    SessionEnd::Retarget(new_addr) => {
+                        // New endpoint: reconnect at once (no backoff) and tell
+                        // viewers to drop the old device's tree.
+                        addr = new_addr;
+                        backoff = 1;
+                        emit(NetEvent::Retargeted);
+                        continue;
+                    }
                 }
             }
             Err(e) => emit(NetEvent::Reconnecting {
@@ -272,7 +303,8 @@ async fn run_connection(
             }),
         }
 
-        // Wait out the backoff - cancellable by shutdown or a Disconnect.
+        // Wait out the backoff - cancellable by shutdown, a Disconnect, or a
+        // retarget (which reconnects immediately to the new address).
         tokio::select! {
             biased;
             _ = &mut shutdown_rx => { emit(NetEvent::Disconnected(None)); return; }
@@ -282,6 +314,12 @@ async fn run_connection(
                 Some(HubMsg::Cmd { cmd: NetCommand::Disconnect, .. }) => {
                     emit(NetEvent::Disconnected(None));
                     return;
+                }
+                Some(HubMsg::Retarget(new_addr)) => {
+                    addr = new_addr;
+                    backoff = 1;
+                    emit(NetEvent::Retargeted);
+                    continue;
                 }
                 // No live writer during backoff; just keep the ref-counts current.
                 Some(HubMsg::Cmd { id, cmd }) => record_sub_intent(&mut subs, id, &cmd),
@@ -334,6 +372,7 @@ async fn run_session(
                     Some(HubMsg::Cmd { cmd: NetCommand::Disconnect, .. }) => {
                         return SessionEnd::UserDisconnect
                     }
+                    Some(HubMsg::Retarget(addr)) => return SessionEnd::Retarget(addr),
                     Some(HubMsg::Drop(id)) => unsubscribe_released(&mut writer, subs, id).await,
                     Some(HubMsg::Cmd { id, cmd }) => {
                         apply_command(&mut writer, subs, id, cmd).await
@@ -510,6 +549,14 @@ mod tests {
         // Unsubscribing an id/path we never had does nothing.
         assert!(!sub_remove(&mut subs, B, 9));
         assert!(!sub_remove(&mut subs, A, 9));
+    }
+
+    #[test]
+    fn retarget_unknown_id_is_noop() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let reg = HubRegistry::new(rt.handle().clone(), egui::Context::default());
+        // Nothing is connected to id 42; retargeting it must not panic.
+        reg.retarget(42, "127.0.0.1:9000".into());
     }
 
     #[test]
