@@ -161,6 +161,19 @@ impl WebApp {
                 WebEvent::AddressBook(nodes) => self.address_tree = nodes,
                 WebEvent::Status { id, status } => {
                     if self.current == Some(id) {
+                        // A `Connecting` status means the shared connection is moving
+                        // to a new address - drop the old device's tree and await
+                        // fresh documents. Keep `subscribed`: the hub replays
+                        // subscriptions to the new endpoint, so ref-counts stay valid.
+                        if matches!(status, WireStatus::Connecting) {
+                            self.tree = TreeModel::new();
+                            self.requested.clear();
+                            self.matrix_fetch.clear();
+                            self.invocations.clear();
+                            self.meter_range.clear();
+                            self.selected = None;
+                            self.signal_params = None;
+                        }
                         self.status = Some(status);
                     }
                 }

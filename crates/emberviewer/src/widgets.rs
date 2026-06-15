@@ -168,6 +168,44 @@ pub fn draw_vmeter(
     resp
 }
 
+/// Draw a round indicator "light" filling `width` × `height`: green for
+/// `Some(true)`, red for `Some(false)`, dim grey when the value is unknown
+/// (`None`). The lit colours match the meter's green/red so the two pop-outs read
+/// as one family.
+// Only the desktop pop-out uses this; the wasm client has no pop-out windows.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub fn draw_indicator(
+    ui: &mut egui::Ui,
+    on: Option<bool>,
+    width: f32,
+    height: f32,
+) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click());
+    let center = rect.center();
+    let radius = (width.min(height) * 0.5 - 4.0).max(4.0);
+    let fill = match on {
+        Some(true) => MTR_GREEN,
+        Some(false) => MTR_RED,
+        None => egui::Color32::from_gray(80),
+    };
+    let painter = ui.painter();
+    // A darker socket ring lifts the lit lens off the panel background.
+    painter.circle_filled(center, radius + 2.0, ui.visuals().extreme_bg_color);
+    painter.circle_filled(center, radius, fill);
+    // A translucent top-left highlight reads as a glossy lens.
+    painter.circle_filled(
+        center - egui::vec2(radius * 0.3, radius * 0.3),
+        radius * 0.3,
+        egui::Color32::from_white_alpha(70),
+    );
+    painter.circle_stroke(
+        center,
+        radius,
+        egui::Stroke::new(1.0, egui::Color32::from_black_alpha(90)),
+    );
+    resp
+}
+
 // ---------------------------------------------------------------------------
 // Value display (factor / format applied)
 // ---------------------------------------------------------------------------

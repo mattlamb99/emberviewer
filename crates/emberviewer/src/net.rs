@@ -63,6 +63,9 @@ pub enum NetEvent {
     },
     /// The connection dropped; will retry in `retry_in_secs`.
     Reconnecting { retry_in_secs: u64, reason: String },
+    /// The connection's target address changed; it is reconnecting to the new
+    /// endpoint. Viewers should drop any cached tree and await fresh documents.
+    Retargeted,
     /// The connection ended for good (user disconnect or fatal).
     Disconnected(Option<String>),
     /// A non-fatal error.
