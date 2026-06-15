@@ -822,7 +822,11 @@ fn fetch_matrix(
     }
     let mut pending = false;
     for base in &m.label_paths {
-        pending |= fetch_subtree(tree, base, mfetch, now, commands);
+        // basePath may be absolute or relative-to-parent depending on the
+        // provider; fetch each interpretation that points at a real node.
+        for cand in crate::model::fetchable_label_bases(tree, path, base) {
+            pending |= fetch_subtree(tree, &cand, mfetch, now, commands);
+        }
     }
     if let Some(ploc) = &m.params_location {
         pending |= fetch_subtree(tree, ploc, mfetch, now, commands);

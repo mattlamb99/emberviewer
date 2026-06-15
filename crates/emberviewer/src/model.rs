@@ -502,9 +502,20 @@ impl TreeModel {
 
     /// Resolve matrix source/target names from fetched label sub-trees.
     ///
-    /// Convention (seen on Lawo Ruby): a matrix's `labels[].basePath` points to a
-    /// node containing `targets`/`sources` sub-nodes, each holding string
-    /// parameters whose *number* is the signal id and whose *value* is the name.
+    /// Tolerates the conventions different providers use for a matrix's
+    /// `labels[].basePath`:
+    ///
+    /// 1. Lawo Ruby / Arkona: basePath -> a node with `targets`/`sources`
+    ///    sub-nodes, each holding string parameters keyed by signal number
+    ///    (value = name).
+    /// 2. Canonical: basePath -> a node (itself named target/source) whose direct
+    ///    string parameters are keyed by signal number (value = name).
+    /// 3. Per-element (emberplus-connection, e.g. the vMix bridge): basePath -> a
+    ///    node (named target/source) whose children are per-signal nodes; the name
+    ///    is a child `Label`/`name` string parameter, or the node's own identifier.
+    ///
+    /// basePath (a RELATIVE-OID whose anchor providers disagree on) is tried as an
+    /// absolute path, then relative to the matrix's parent, then to the matrix.
     fn resolve_matrix_labels(&mut self) {
         let matrices: Vec<(Vec<u32>, Vec<Vec<u32>>)> = self
             .entries
@@ -521,30 +532,15 @@ impl TreeModel {
             let mut targets = BTreeMap::new();
             let mut sources = BTreeMap::new();
             for base in &label_paths {
-                let Some(base_entry) = self.entries.get(base) else {
-                    continue;
-                };
-                for axis_path in base_entry.children.clone() {
-                    let Some(axis) = self.entries.get(&axis_path) else {
-                        continue;
-                    };
-                    let id = axis.identifier.to_lowercase();
-                    let map = if id.contains("target") {
-                        &mut targets
-                    } else if id.contains("source") {
-                        &mut sources
-                    } else {
-                        continue;
-                    };
-                    for pp in axis.children.clone() {
-                        let Some(pe) = self.entries.get(&pp) else {
-                            continue;
-                        };
-                        if let Some(Value::String(name)) = &pe.value {
-                            if let Some(num) = pp.last() {
-                                map.insert(*num, name.clone());
-                            }
-                        }
+                // Use the first basePath interpretation that actually yields names.
+                for cand in label_base_candidates(&mpath, base) {
+                    let mut t = BTreeMap::new();
+                    let mut s = BTreeMap::new();
+                    self.extract_labels(&cand, &mut t, &mut s);
+                    if !t.is_empty() || !s.is_empty() {
+                        targets.extend(t);
+                        sources.extend(s);
+                        break;
                     }
                 }
             }
@@ -573,6 +569,100 @@ impl TreeModel {
             }
         }
         self.resolve_matrix_param_paths();
+    }
+
+    /// Extract target/source labels from the label node at `base`, trying each
+    /// supported convention. Adds names into `targets`/`sources` keyed by signal.
+    fn extract_labels(
+        &self,
+        base: &[u32],
+        targets: &mut BTreeMap<u32, String>,
+        sources: &mut BTreeMap<u32, String>,
+    ) {
+        let Some(base_entry) = self.entries.get(base) else {
+            return;
+        };
+        // Convention 1: `base` holds `targets`/`sources` child NODES (Lawo Ruby),
+        // each containing the per-signal string parameters.
+        let mut had_axis_node = false;
+        for axis_path in base_entry.children.clone() {
+            let Some(axis) = self.entries.get(&axis_path) else {
+                continue;
+            };
+            if axis.kind != Kind::Node {
+                continue;
+            }
+            let Some(is_target) = axis_of(&axis.identifier) else {
+                continue;
+            };
+            had_axis_node = true;
+            for pp in axis.children.clone() {
+                if let Some(Value::String(name)) =
+                    self.entries.get(&pp).and_then(|e| e.value.clone())
+                {
+                    if let Some(num) = pp.last() {
+                        let map = if is_target {
+                            &mut *targets
+                        } else {
+                            &mut *sources
+                        };
+                        map.insert(*num, name);
+                    }
+                }
+            }
+        }
+        if had_axis_node {
+            return;
+        }
+        // Conventions 2 & 3: `base` is itself one axis (its identifier names it).
+        // Its children are either string parameters keyed by signal (canonical) or
+        // per-signal nodes whose name comes from a child param / their identifier.
+        let Some(is_target) = axis_of(&base_entry.identifier) else {
+            return;
+        };
+        let map = if is_target { targets } else { sources };
+        for cp in base_entry.children.clone() {
+            let (Some(ce), Some(&num)) = (self.entries.get(&cp), cp.last()) else {
+                continue;
+            };
+            match ce.kind {
+                Kind::Parameter => {
+                    if let Some(Value::String(name)) = &ce.value {
+                        map.insert(num, name.clone());
+                    }
+                }
+                Kind::Node => {
+                    if let Some(name) = self.element_label_name(ce) {
+                        map.insert(num, name);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// The display name for a per-signal element node: a child `label`/`name`
+    /// string parameter, else any child string parameter, else the node's own
+    /// identifier (or description).
+    fn element_label_name(&self, node: &Entry) -> Option<String> {
+        let mut fallback: Option<String> = None;
+        for cp in &node.children {
+            if let Some(ce) = self.entries.get(cp) {
+                if let Some(Value::String(name)) = &ce.value {
+                    let id = ce.identifier.to_lowercase();
+                    if id.contains("label") || id.contains("name") {
+                        return Some(name.clone());
+                    }
+                    fallback.get_or_insert_with(|| name.clone());
+                }
+            }
+        }
+        fallback
+            .or_else(|| {
+                let id = node.identifier.trim();
+                (!id.is_empty()).then(|| id.to_string())
+            })
+            .or_else(|| node.description.clone().filter(|d| !d.is_empty()))
     }
 
     /// Resolve a matrix's `parametersLocation/targets` and `/sources` child node
@@ -731,6 +821,54 @@ pub fn format_value(v: &Value) -> String {
         Value::Boolean(b) => b.to_string(),
         Value::Octets(o) => format!("<{} bytes>", o.len()),
     }
+}
+
+/// Classify a label node's identifier as the target axis (`Some(true)`), the
+/// source axis (`Some(false)`), or neither (`None`).
+fn axis_of(identifier: &str) -> Option<bool> {
+    let id = identifier.to_lowercase();
+    if id.contains("target") {
+        Some(true)
+    } else if id.contains("source") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// Candidate node paths for a label `basePath`. The Ember+ `basePath` is a
+/// RELATIVE-OID and providers disagree on its anchor: some encode the absolute
+/// path from root (Lawo Ruby / Arkona), others encode it relative to the matrix's
+/// parent (emberplus-connection, e.g. the vMix bridge). Absolute is tried first,
+/// then relative to the matrix's parent.
+fn label_base_candidates(mpath: &[u32], base: &[u32]) -> Vec<Vec<u32>> {
+    let mut cands: Vec<Vec<u32>> = vec![base.to_vec()];
+    if !mpath.is_empty() {
+        let rel_parent: Vec<u32> = mpath[..mpath.len() - 1]
+            .iter()
+            .chain(base)
+            .copied()
+            .collect();
+        if rel_parent != base {
+            cands.push(rel_parent);
+        }
+    }
+    cands
+}
+
+/// The label basePath candidates worth *fetching*: those whose node or immediate
+/// parent is already in the tree, so a `getDirectory` is meaningful. This avoids
+/// spraying requests at a dangling wrong-anchor path (e.g. an absolute `[2]` when
+/// the provider meant relative-to-parent), keeping discovery traffic minimal.
+pub(crate) fn fetchable_label_bases(
+    tree: &TreeModel,
+    matrix_path: &[u32],
+    base: &[u32],
+) -> Vec<Vec<u32>> {
+    label_base_candidates(matrix_path, base)
+        .into_iter()
+        .filter(|c| tree.get(c).is_some() || (c.len() > 1 && tree.get(&c[..c.len() - 1]).is_some()))
+        .collect()
 }
 
 /// How long (egui seconds) to wait before re-requesting a label sub-tree node
@@ -909,6 +1047,128 @@ mod tests {
             })
             .collect();
         Root::Elements(RootElementCollection(entries))
+    }
+
+    /// Build a QualifiedMatrix root with N:N type and the given label basePaths.
+    fn matrix_doc(
+        path: &[u32],
+        id: &str,
+        tcount: i32,
+        scount: i32,
+        labels: &[(&[u32], &str)],
+    ) -> Root {
+        let labels = LabelCollection(
+            labels
+                .iter()
+                .map(|(bp, desc)| {
+                    LabelEntry(Label {
+                        base_path: RelativeOid::from_arcs(bp),
+                        description: (*desc).into(),
+                    })
+                })
+                .collect(),
+        );
+        let qm = QualifiedMatrix {
+            path: RelativeOid::from_arcs(path),
+            contents: Some(MatrixContents {
+                identifier: Some(id.into()),
+                r#type: Some(2), // N:N
+                addressing_mode: Some(1),
+                target_count: Some(tcount),
+                source_count: Some(scount),
+                labels: Some(labels),
+                ..Default::default()
+            }),
+            children: None,
+            targets: None,
+            sources: None,
+            connections: None,
+        };
+        Root::from_element(RootElement::QualifiedMatrix(qm))
+    }
+
+    /// The emberplus-connection / vMix-bridge convention: a matrix's
+    /// `labels[].basePath` is relative to the matrix's parent and points straight
+    /// at a `Targets`/`Sources` node whose children are per-signal nodes; the name
+    /// is a child `Label` string parameter, or (failing that) the node identifier.
+    #[test]
+    fn per_element_matrix_labels_resolve_with_relative_basepath() {
+        let mut tree = TreeModel::new();
+        // vMix[1] / Matrices[1,3] / Routing[1,3,1] / { Matrix .1, Targets .2, Sources .3 }
+        tree.merge(node_doc(&[1], "vMix"));
+        tree.merge(node_doc(&[1, 3], "Matrices"));
+        tree.merge(node_doc(&[1, 3, 1], "Routing"));
+        // basePath 2/3 are relative to the matrix's parent ([1,3,1]), not absolute.
+        tree.merge(matrix_doc(
+            &[1, 3, 1, 1],
+            "vMix Routing Matrix",
+            2,
+            2,
+            &[(&[2], "Targets"), (&[3], "Sources")],
+        ));
+        tree.merge(node_doc(&[1, 3, 1, 2], "Targets"));
+        tree.merge(node_doc(&[1, 3, 1, 3], "Sources"));
+        // Per-signal element nodes (identifier is a name); some carry a Label param.
+        tree.merge(node_doc(&[1, 3, 1, 2, 1], "Output 1"));
+        tree.merge(node_doc(&[1, 3, 1, 2, 2], "Output 2"));
+        tree.merge(node_doc(&[1, 3, 1, 3, 1], "Camera 1"));
+        tree.merge(node_doc(&[1, 3, 1, 3, 2], "Camera 2"));
+        tree.merge(params_doc(&[
+            (
+                &[1, 3, 1, 2, 1, 1],
+                "Label",
+                Value::String("PGM Output".into()),
+                1,
+            ),
+            // target 2 has no Label param -> name falls back to the node identifier.
+            (
+                &[1, 3, 1, 3, 1, 1],
+                "Label",
+                Value::String("Cam 1".into()),
+                1,
+            ),
+            // source 2 falls back to "Camera 2".
+        ]));
+
+        let m = tree
+            .get(&[1, 3, 1, 1])
+            .and_then(|e| e.matrix.as_ref())
+            .expect("matrix present");
+        assert_eq!(
+            m.target_labels.get(&1).map(String::as_str),
+            Some("PGM Output"), // from the child Label parameter
+            "targets: {:?}",
+            m.target_labels
+        );
+        assert_eq!(
+            m.target_labels.get(&2).map(String::as_str),
+            Some("Output 2") // from the element node's identifier
+        );
+        assert_eq!(m.source_labels.get(&1).map(String::as_str), Some("Cam 1"));
+        assert_eq!(
+            m.source_labels.get(&2).map(String::as_str),
+            Some("Camera 2")
+        );
+    }
+
+    /// Canonical variant: the basePath node is itself an axis whose direct string
+    /// parameters are keyed by signal number.
+    #[test]
+    fn canonical_matrix_labels_resolve_from_direct_params() {
+        let mut tree = TreeModel::new();
+        tree.merge(node_doc(&[0], "dev"));
+        tree.merge(matrix_doc(&[0, 1], "M", 2, 0, &[(&[0, 2], "Targets")]));
+        tree.merge(node_doc(&[0, 2], "Targets"));
+        tree.merge(params_doc(&[
+            (&[0, 2, 0], "t0", Value::String("Out A".into()), 1),
+            (&[0, 2, 1], "t1", Value::String("Out B".into()), 1),
+        ]));
+        let m = tree
+            .get(&[0, 1])
+            .and_then(|e| e.matrix.as_ref())
+            .expect("matrix");
+        assert_eq!(m.target_labels.get(&0).map(String::as_str), Some("Out A"));
+        assert_eq!(m.target_labels.get(&1).map(String::as_str), Some("Out B"));
     }
 
     #[test]

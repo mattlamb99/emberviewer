@@ -2393,7 +2393,12 @@ fn render_entry(
             }
             let mut pending = false;
             for base in m.label_paths.clone() {
-                pending |= fetch_label_subtree(session, &base, now, commands);
+                // basePath may be absolute or relative-to-parent depending on the
+                // provider; fetch each interpretation that points at a real node.
+                let cands = crate::model::fetchable_label_bases(&session.tree, &entry.path, &base);
+                for cand in cands {
+                    pending |= fetch_label_subtree(session, &cand, now, commands);
+                }
             }
             if let Some(ploc) = m.params_location.clone() {
                 pending |= fetch_label_subtree(session, &ploc, now, commands);
