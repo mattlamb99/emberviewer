@@ -18,6 +18,8 @@ use crate::web_transport::{WebEvent, WsConnection};
 use crate::widgets;
 
 const ACCENT: egui::Color32 = egui::Color32::from_rgb(217, 119, 43);
+/// Amber marking an optimistic (locally-set, unconfirmed) parameter value.
+const PENDING_COLOR: egui::Color32 = egui::Color32::from_rgb(230, 160, 30);
 
 pub struct WebApp {
     conn: Option<WsConnection>,
@@ -54,6 +56,11 @@ pub struct WebApp {
     selected: Option<Vec<u32>>,
     /// Open "signal parameters" popup (matrix header click): node path + title.
     signal_params: Option<(Vec<u32>, String)>,
+    /// Open multi-line string editor/viewer, if any.
+    string_edit: Option<widgets::StringEdit>,
+    /// Paths set optimistically and not yet confirmed by a provider value update,
+    /// shown as "pending" so an unconfirmed value reads differently from a real one.
+    pending: HashSet<Vec<u32>>,
     /// Last "denied" message from the server (read-only mode).
     denied: Option<String>,
     dark: bool,
@@ -95,6 +102,8 @@ impl WebApp {
             meter_range: HashMap::new(),
             selected: None,
             signal_params: None,
+            string_edit: None,
+            pending: HashSet::new(),
             denied: None,
             dark: true,
             locked: true,
@@ -173,6 +182,7 @@ impl WebApp {
                             self.meter_range.clear();
                             self.selected = None;
                             self.signal_params = None;
+                            self.pending.clear();
                         }
                         self.status = Some(status);
                     }
@@ -180,6 +190,11 @@ impl WebApp {
                 WebEvent::Document { id, root } => {
                     if self.current == Some(id) {
                         self.tree.merge(root);
+                        // A value update from the provider is authoritative: clear
+                        // the optimistic "pending" mark on those paths.
+                        for p in self.tree.take_value_updates() {
+                            self.pending.remove(&p);
+                        }
                     }
                 }
                 WebEvent::Denied { reason } => self.denied = Some(reason),
@@ -343,6 +358,8 @@ impl eframe::App for WebApp {
                         requested: &mut self.requested,
                         matrix_fetch: &mut self.matrix_fetch,
                         edits: &mut self.edits,
+                        string_edit: &mut self.string_edit,
+                        pending: &self.pending,
                         func_inputs: &mut self.func_inputs,
                         invocations: &mut self.invocations,
                         next_invocation_id: &mut self.next_invocation_id,
@@ -397,6 +414,7 @@ impl eframe::App for WebApp {
             self.open_provider(id);
         }
         self.signal_params_window(ui);
+        self.string_edit_window(ui);
     }
 }
 
@@ -437,6 +455,11 @@ struct RenderCtx<'a> {
     requested: &'a mut HashMap<Vec<u32>, (f64, u8)>,
     matrix_fetch: &'a mut HashMap<Vec<u32>, (f64, u8)>,
     edits: &'a mut HashMap<Vec<u32>, String>,
+    /// Open multi-line string editor/viewer, set when a row's `Edit…`/`View…`
+    /// button is clicked.
+    string_edit: &'a mut Option<widgets::StringEdit>,
+    /// Paths with an unconfirmed optimistic value (rendered as "pending").
+    pending: &'a HashSet<Vec<u32>>,
     func_inputs: &'a mut HashMap<(Vec<u32>, usize), String>,
     invocations: &'a mut HashMap<Vec<u32>, i32>,
     next_invocation_id: &'a mut i32,
@@ -489,12 +512,15 @@ impl WebApp {
                         for cp in &children {
                             if let Some(ce) = self.tree.get(cp) {
                                 ui.label(egui::RichText::new(&ce.identifier).strong());
+                                let pending = self.pending.contains(cp);
                                 let (_, blocked) = widgets::lockable(ui, armed, |ui| {
                                     param_editor(
                                         ui,
                                         &self.tree,
                                         cp,
                                         &mut self.edits,
+                                        &mut self.string_edit,
+                                        pending,
                                         &mut commands,
                                     );
                                 });
@@ -513,6 +539,27 @@ impl WebApp {
         if let (Some(conn), Some(id)) = (&self.conn, self.current) {
             for cmd in &commands {
                 conn.send_command(id, cmd);
+            }
+        }
+    }
+
+    /// Multi-line string editor/viewer window (opened from a string parameter's
+    /// `Edit…`/`View…` button); applies edits via `SetValue`.
+    fn string_edit_window(&mut self, ui: &mut egui::Ui) {
+        if let Some((path, value)) = widgets::string_edit_window(ui.ctx(), &mut self.string_edit) {
+            // Optimistically reflect the applied value: many SDP/string params are
+            // write-mostly and never echo the value back, which would otherwise
+            // leave the row blank after Apply. A real device update still wins.
+            if let Some(e) = self.tree.entries.get_mut(&path) {
+                e.value = Some(value.clone());
+            }
+            // Mark optimistic until the provider's value update confirms it.
+            self.pending.insert(path.clone());
+            if let (Some(conn), Some(id)) = (&self.conn, self.current) {
+                conn.send_command(id, &NetCommand::SetValue(path.clone(), value));
+                // Re-read so the device's authoritative value wins (e.g. it
+                // rejected a malformed SDP and blanked its own value).
+                conn.send_command(id, &NetCommand::RefreshValue(path));
             }
         }
     }
@@ -644,6 +691,16 @@ fn render_node(ui: &mut egui::Ui, ctx: &mut RenderCtx, path: &[u32]) {
     let bg = ui.painter().add(egui::Shape::Noop);
     let resp = ui
         .horizontal(|ui| {
+            if ctx.pending.contains(path) {
+                // Amber dot: value set locally, not yet confirmed by the provider.
+                let (rect, resp) = ui.allocate_exact_size(
+                    egui::vec2(10.0, ui.spacing().interact_size.y),
+                    egui::Sense::hover(),
+                );
+                ui.painter()
+                    .circle_filled(rect.center(), 4.0, PENDING_COLOR);
+                resp.on_hover_text("Pending: set locally, awaiting device confirmation");
+            }
             let (badge, color) = if entry.is_writable() {
                 ("rw", egui::Color32::from_rgb(70, 130, 200))
             } else {
@@ -671,8 +728,17 @@ fn render_node(ui: &mut egui::Ui, ctx: &mut RenderCtx, path: &[u32]) {
                         *ctx.selected = Some(path.to_vec());
                     }
                 }
+                let pending = ctx.pending.contains(path);
                 let (_, blocked) = widgets::lockable(ui, ctx.armed, |ui| {
-                    param_editor(ui, tree, path, ctx.edits, ctx.commands);
+                    param_editor(
+                        ui,
+                        tree,
+                        path,
+                        ctx.edits,
+                        ctx.string_edit,
+                        pending,
+                        ctx.commands,
+                    );
                 });
                 if blocked {
                     *ctx.flash = ctx.now + widgets::LOCK_FLASH_SECS;
@@ -700,6 +766,8 @@ fn param_editor(
     tree: &TreeModel,
     path: &[u32],
     edits: &mut HashMap<Vec<u32>, String>,
+    string_edit: &mut Option<widgets::StringEdit>,
+    pending: bool,
     commands: &mut Vec<NetCommand>,
 ) {
     let Some(entry) = tree.get(path) else {
@@ -778,7 +846,16 @@ fn param_editor(
             }
         }
         Some(Value::String(s)) => {
-            if writable {
+            // Pop-out multi-line editor/viewer for long/multi-line values (SDPs).
+            let (label, hover) = if writable {
+                ("Edit…", "Edit in a larger box")
+            } else {
+                ("View…", "View in a larger box")
+            };
+            if ui.button(label).on_hover_text(hover).clicked() {
+                *string_edit = Some(widgets::StringEdit::new(entry, s));
+            }
+            if writable && !s.contains(['\n', '\r']) {
                 let buf = edits.entry(path.to_vec()).or_insert_with(|| s.clone());
                 let resp = ui.add(egui::TextEdit::singleline(buf).desired_width(160.0));
                 if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
@@ -786,7 +863,14 @@ fn param_editor(
                     set(commands, Value::String(v));
                 }
             } else {
-                ui.label(s.clone());
+                // Keep line breaks (CR dropped) and wrap so a multi-line value
+                // grows the row taller; multi-line writable is edited via the
+                // pop-out, single-line read-only just shows.
+                let mut text = egui::RichText::new(widgets::clean_multiline(s));
+                if pending {
+                    text = text.color(PENDING_COLOR);
+                }
+                ui.add(egui::Label::new(text).wrap());
             }
         }
         Some(v) => {

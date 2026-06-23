@@ -282,6 +282,162 @@ pub fn parse_value(s: &str, ptype: i32) -> Value {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Multi-line string editor / viewer
+// ---------------------------------------------------------------------------
+
+/// Open state for the multi-line string editor/viewer popup. Long or multi-line
+/// string values (e.g. SDPs) don't fit the inline field, so a `View…`/`Edit…`
+/// button opens this window. Held per front-end (desktop `Session`, web app).
+pub struct StringEdit {
+    /// Parameter being viewed/edited.
+    pub path: Vec<u32>,
+    /// Window title (the parameter's label).
+    pub title: String,
+    /// Editable buffer, seeded from the live value when opened.
+    pub buf: String,
+    /// Writable parameters get an Apply button; read-only ones are view-only.
+    pub writable: bool,
+}
+
+impl StringEdit {
+    /// Open the editor for `entry`, seeding the buffer with the current string.
+    pub fn new(entry: &Entry, value: &str) -> Self {
+        StringEdit {
+            path: entry.path.clone(),
+            title: entry.label().to_string(),
+            buf: value.to_string(),
+            writable: entry.is_writable(),
+        }
+    }
+}
+
+/// Copy `text` to the system clipboard. On native this is egui's clipboard. On
+/// web egui's path uses the async Clipboard API, which the browser only exposes
+/// in a secure context (HTTPS or localhost) - so when the UI is served over
+/// plain-HTTP LAN access it silently no-ops. We add a legacy `execCommand`
+/// fallback that works in insecure contexts too.
+pub fn copy_text(ui: &egui::Ui, text: String) {
+    #[cfg(target_arch = "wasm32")]
+    wasm_copy_fallback(&text);
+    ui.ctx().copy_text(text);
+}
+
+/// Copy via a hidden `<textarea>` + `document.execCommand("copy")` - the legacy
+/// path that still works over plain HTTP, where `navigator.clipboard` is absent.
+#[cfg(target_arch = "wasm32")]
+fn wasm_copy_fallback(text: &str) {
+    use wasm_bindgen::JsCast;
+    let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
+        return;
+    };
+    // `execCommand` lives on `HtmlDocument`; the page document is one at runtime.
+    let Ok(doc) = doc.dyn_into::<web_sys::HtmlDocument>() else {
+        return;
+    };
+    let Some(body) = doc.body() else {
+        return;
+    };
+    let Ok(el) = doc.create_element("textarea") else {
+        return;
+    };
+    // Off-screen and inert so it neither flashes nor scrolls the page.
+    let _ = el.set_attribute("style", "position:fixed;left:-9999px;top:0;opacity:0;");
+    let Ok(area) = el.dyn_into::<web_sys::HtmlTextAreaElement>() else {
+        return;
+    };
+    area.set_value(text);
+    if body.append_child(&area).is_err() {
+        return;
+    }
+    area.select();
+    let _ = doc.exec_command("copy");
+    let _ = body.remove_child(&area);
+}
+
+/// Sanitize a string value for inline row display while preserving line breaks.
+/// egui renders CR and other control chars as tofu, but lays out `\n` as a real
+/// line break - so we drop the former and keep the latter. A multi-line value
+/// (e.g. an SDP) then wraps across several lines and the row grows to fit,
+/// rather than stretching into one very wide line. Tabs become spaces and
+/// trailing blank space is trimmed.
+pub fn clean_multiline(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\n' => out.push('\n'),
+            '\t' => out.push(' '),
+            c if c.is_control() => {} // CR and friends render as tofu - drop them
+            c => out.push(c),
+        }
+    }
+    while out.ends_with(['\n', ' ']) {
+        out.pop();
+    }
+    out
+}
+
+/// Render the string editor/viewer as a window while `open` is `Some`. Returns
+/// `(path, value)` when the user clicks Apply (writable only); the caller turns
+/// that into a `SetValue`. Closes on Apply, Cancel/Close, or the window's X.
+pub fn string_edit_window(
+    ctx: &egui::Context,
+    open: &mut Option<StringEdit>,
+) -> Option<(Vec<u32>, Value)> {
+    let state = open.as_mut()?;
+    let mut result = None;
+    // `keep_open` drives the window's X; `dismiss` the Cancel/Close button. They
+    // are separate because `.open()` borrows `keep_open` for the whole closure.
+    let mut keep_open = true;
+    let mut dismiss = false;
+    let verb = if state.writable { "Edit" } else { "View" };
+    egui::Window::new(format!("{verb} value - {}", state.title))
+        .id(egui::Id::new(("string_edit", &state.path)))
+        .collapsible(false)
+        .resizable(true)
+        .default_width(480.0)
+        .default_height(320.0)
+        .open(&mut keep_open)
+        .show(ctx, |ui| {
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .max_height((ui.available_height() - 36.0).max(80.0))
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::multiline(&mut state.buf)
+                            .desired_width(f32::INFINITY)
+                            .desired_rows(16)
+                            .code_editor(),
+                    );
+                });
+            ui.separator();
+            ui.horizontal(|ui| {
+                if state.writable {
+                    if ui.button("Apply").clicked() {
+                        result = Some((state.path.clone(), Value::String(state.buf.clone())));
+                    }
+                    if ui.button("Cancel").clicked() {
+                        dismiss = true;
+                    }
+                    if ui.button("Copy value").clicked() {
+                        copy_text(ui, state.buf.clone());
+                    }
+                } else {
+                    if ui.button("Copy").clicked() {
+                        copy_text(ui, state.buf.clone());
+                    }
+                    if ui.button("Close").clicked() {
+                        dismiss = true;
+                    }
+                }
+            });
+        });
+    if result.is_some() || dismiss || !keep_open {
+        *open = None;
+    }
+    result
+}
+
 /// Render a function's argument form, an Invoke button, and the last result.
 /// State lives outside (per-front-end) rather than in a `Session`.
 #[allow(clippy::too_many_arguments)]

@@ -305,6 +305,11 @@ impl ProviderWriter {
         self.send(&Root::set_value_at(path, value)).await
     }
 
+    /// Re-read the parameter at `path` (returns its current value).
+    pub async fn get_parameter(&mut self, path: &[u32]) -> Result<(), ConnError> {
+        self.send(&Root::get_parameter_at(path)).await
+    }
+
     /// Subscribe to value changes of the parameter at `path`.
     pub async fn subscribe(&mut self, path: &[u32]) -> Result<(), ConnError> {
         self.send(&Root::subscribe_at(path)).await

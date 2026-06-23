@@ -40,6 +40,7 @@ pub fn command_to_wire(cmd: &NetCommand) -> WireCommand {
             path: p.clone(),
             value: value_to_wire(v),
         },
+        NetCommand::RefreshValue(p) => WireCommand::RefreshValue { path: p.clone() },
         NetCommand::Subscribe(p) => WireCommand::Subscribe { path: p.clone() },
         NetCommand::Unsubscribe(p) => WireCommand::Unsubscribe { path: p.clone() },
         NetCommand::MatrixConnect {
@@ -74,6 +75,7 @@ pub fn command_from_wire(w: WireCommand) -> Option<NetCommand> {
         WireCommand::SetValue { path, value } => {
             NetCommand::SetValue(path, value_from_wire(&value)?)
         }
+        WireCommand::RefreshValue { path } => NetCommand::RefreshValue(path),
         WireCommand::Subscribe { path } => NetCommand::Subscribe(path),
         WireCommand::Unsubscribe { path } => NetCommand::Unsubscribe(path),
         WireCommand::MatrixConnect {

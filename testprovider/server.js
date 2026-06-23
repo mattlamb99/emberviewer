@@ -75,6 +75,28 @@ const jsonTree = [
                         access: 'readWrite',
                     },
                     {
+                        identifier: 'sdp',
+                        type: 'string',
+                        value:
+                            'v=0\r\n' +
+                            'o=- 1234567890 1234567890 IN IP4 192.168.1.10\r\n' +
+                            's=Stream 1\r\n' +
+                            'c=IN IP4 239.0.0.1/32\r\n' +
+                            't=0 0\r\n' +
+                            'm=video 5004 RTP/AVP 96\r\n' +
+                            'a=rtpmap:96 raw/90000\r\n' +
+                            'a=fmtp:96 sampling=YCbCr-4:2:2; width=1920; height=1080; ' +
+                            'exactframerate=50; depth=10; colorimetry=BT709; PM=2110GPM; ' +
+                            'TP=2110TPN; SSN=ST2110-20:2017\r\n',
+                        access: 'read',
+                    },
+                    {
+                        identifier: 'sdpWritable',
+                        type: 'string',
+                        value: 'v=0\r\no=- 1 1 IN IP4 0.0.0.0\r\ns=edit me\r\n',
+                        access: 'readWrite',
+                    },
+                    {
                         identifier: 'boolParam',
                         type: 'boolean',
                         value: true,
