@@ -23,6 +23,9 @@ pub enum NetCommand {
     GetMatrixDirectory(Vec<u32>),
     /// Set the parameter at this path to a new value.
     SetValue(Vec<u32>, Value),
+    /// Re-read the parameter at this path (e.g. after a set, to reflect the
+    /// provider's authoritative value when it doesn't echo the change back).
+    RefreshValue(Vec<u32>),
     /// Subscribe to value changes of the parameter at this path.
     Subscribe(Vec<u32>),
     /// Unsubscribe from value changes of the parameter at this path.

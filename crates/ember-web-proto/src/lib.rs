@@ -43,6 +43,9 @@ pub enum WireCommand {
         path: Vec<u32>,
         value: WireValue,
     },
+    RefreshValue {
+        path: Vec<u32>,
+    },
     Subscribe {
         path: Vec<u32>,
     },

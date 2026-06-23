@@ -412,6 +412,7 @@ async fn apply_command(
         NetCommand::GetDirectory(path) => writer.get_directory(&path).await,
         NetCommand::GetMatrixDirectory(path) => writer.get_matrix_directory(&path).await,
         NetCommand::SetValue(path, value) => writer.set_value(&path, value).await,
+        NetCommand::RefreshValue(path) => writer.get_parameter(&path).await,
         NetCommand::Subscribe(path) => {
             if sub_add(subs, &path, id) {
                 writer.subscribe(&path).await

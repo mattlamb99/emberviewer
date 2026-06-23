@@ -18,8 +18,9 @@ use crate::net::{ConnectionHandle, NetCommand, NetEvent};
 use crate::server::{self, ServerHandle};
 use crate::settings::{OrderBy, Settings, StartupMode};
 use crate::widgets::{
-    display_value, draw_indicator, draw_vmeter, format_suffix, is_meterable, lock_toggle, lockable,
-    meter_range, meter_readout, render_function, value_f64, LOCK_FLASH_SECS,
+    clean_multiline, display_value, draw_indicator, draw_vmeter, format_suffix, is_meterable,
+    lock_toggle, lockable, meter_range, meter_readout, render_function, string_edit_window,
+    value_f64, StringEdit, LOCK_FLASH_SECS,
 };
 
 /// State for one open provider connection.
@@ -62,6 +63,12 @@ struct Session {
     label_retry: HashMap<Vec<u32>, (f64, u8)>,
     /// Open "signal parameters" popup: the signal's parameter node path + a title.
     signal_params: Option<(Vec<u32>, String)>,
+    /// Open multi-line string editor/viewer, if any.
+    string_edit: Option<StringEdit>,
+    /// Paths set optimistically on the UI side and not yet confirmed by a value
+    /// update from the provider. Rendered as "pending" so an unconfirmed value is
+    /// distinguishable from an authoritative one.
+    pending: HashSet<Vec<u32>>,
     /// egui time until which the padlock flashes (set when a locked control is
     /// clicked, to explain why the action did nothing).
     flash_until: f64,
@@ -206,6 +213,8 @@ pub struct App {
 
 /// The project's warm-orange brand accent.
 const ACCENT: egui::Color32 = egui::Color32::from_rgb(217, 119, 43);
+/// Amber used to mark an optimistic (locally-set, unconfirmed) parameter value.
+const PENDING_COLOR: egui::Color32 = egui::Color32::from_rgb(230, 160, 30);
 
 /// Apply the chosen base theme (dark/light) and overlay a hint of the brand
 /// accent. Used both at startup and when the theme toggle changes.
@@ -455,6 +464,8 @@ impl App {
                 label_fetch: HashSet::new(),
                 label_retry: HashMap::new(),
                 signal_params: None,
+                string_edit: None,
+                pending: HashSet::new(),
                 flash_until: 0.0,
                 traffic_prev: ember_net::TrafficSnapshot::default(),
                 traffic_t: 0.0,
@@ -565,6 +576,11 @@ impl App {
                         for root in roots.iter() {
                             session.tree.merge(root.clone());
                         }
+                        // A value update from the provider is authoritative: clear
+                        // the optimistic "pending" mark on those paths.
+                        for p in session.tree.take_value_updates() {
+                            session.pending.remove(&p);
+                        }
                         for (p, old) in snaps {
                             if let Some(e) = session.tree.get(&p) {
                                 if e.value.is_some() && e.value != old {
@@ -599,6 +615,7 @@ impl App {
                         // consistent.
                         session.status = Status::Connecting;
                         session.tree = TreeModel::new();
+                        session.pending.clear();
                     }
                     NetEvent::Disconnected(reason) => {
                         session.status =
@@ -606,6 +623,7 @@ impl App {
                         if clear_on_disconnect {
                             session.tree = TreeModel::new();
                             session.subscribed.clear();
+                            session.pending.clear();
                         }
                     }
                     NetEvent::Error(e) => self.status_line = format!("error: {e}"),
@@ -978,6 +996,7 @@ impl eframe::App for App {
         self.options_window(&ctx);
         self.about_window(&ctx);
         self.signal_params_window(&ctx);
+        self.string_edit_window(&ctx);
         self.discovery_window(&ctx);
         self.tabs(ui);
 
@@ -1825,6 +1844,34 @@ impl App {
         }
     }
 
+    /// Multi-line string editor/viewer window (opened from a string parameter's
+    /// `Edit…`/`View…` button); applies edits via `SetValue`.
+    fn string_edit_window(&mut self, ctx: &egui::Context) {
+        let Some(id) = self.active else {
+            return;
+        };
+        let Some(session) = self.sessions.get_mut(&id) else {
+            return;
+        };
+        if let Some((path, value)) = string_edit_window(ctx, &mut session.string_edit) {
+            // Optimistically reflect the applied value: many SDP/string params are
+            // write-mostly and never echo the value back, which would otherwise
+            // leave the row blank after Apply. A real device update (which carries
+            // a value) still overrides this.
+            if let Some(e) = session.tree.entries.get_mut(&path) {
+                e.value = Some(value.clone());
+            }
+            // Mark optimistic until the provider's value update confirms it.
+            session.pending.insert(path.clone());
+            session
+                .handle
+                .send(NetCommand::SetValue(path.clone(), value));
+            // Re-read so the device's authoritative value wins: if it rejected a
+            // malformed SDP and blanked its own value, we show that truth.
+            session.handle.send(NetCommand::RefreshValue(path));
+        }
+    }
+
     /// Popup showing a matrix signal's parameters (gain, type, name, …), opened
     /// by clicking a row/column header in the matrix grid.
     fn signal_params_window(&mut self, ctx: &egui::Context) {
@@ -2601,6 +2648,7 @@ fn render_parameter(
 ) {
     let label = param_label(entry, opts);
     let logging = session.logged.contains(&entry.path);
+    let pending = session.pending.contains(&entry.path);
     let eff_online = online && entry.is_online;
     let selected = session.selected.as_deref() == Some(entry.path.as_slice());
     let meterable = is_meterable(entry);
@@ -2615,6 +2663,17 @@ fn render_parameter(
             ui.add_space(8.0);
             if logging {
                 paint_dot(ui, egui::Color32::from_rgb(210, 60, 60));
+            }
+            if pending {
+                // Amber dot: value was set locally but not yet confirmed by the
+                // provider, so what's shown is optimistic, not authoritative.
+                let (rect, resp) = ui.allocate_exact_size(
+                    egui::vec2(12.0, ui.spacing().interact_size.y),
+                    egui::Sense::hover(),
+                );
+                ui.painter()
+                    .circle_filled(rect.center(), 4.5, PENDING_COLOR);
+                resp.on_hover_text("Pending: set locally, awaiting device confirmation");
             }
             let (badge, color) = if entry.is_writable() {
                 ("rw", egui::Color32::from_rgb(70, 130, 200))
@@ -2670,11 +2729,42 @@ fn render_parameter(
                         session.flash_until = ui.input(|i| i.time) + LOCK_FLASH_SECS;
                     }
                 } else if let Some(v) = &entry.value {
+                    // Read-only strings get a viewer for long/multi-line values
+                    // (e.g. SDPs) that the truncated inline label can't show.
+                    if let Value::String(s) = v {
+                        if ui
+                            .button("View…")
+                            .on_hover_text("View in a larger box")
+                            .clicked()
+                        {
+                            session.string_edit = Some(StringEdit::new(entry, s));
+                        }
+                    }
                     // The value is also a select/right-click target (like the name),
-                    // so you can click it to show the meter or pop it out.
-                    let vresp = ui
-                        .add(egui::Label::new(display_value(entry, v)).sense(egui::Sense::click()))
-                        .on_hover_text("click to show meter · right-click for options");
+                    // so you can click it to show the meter or pop it out. Strings
+                    // keep their line breaks (CR dropped) and wrap, so a multi-line
+                    // value grows the row taller instead of running off to the side.
+                    let is_string = matches!(v, Value::String(_));
+                    let preview = match v {
+                        Value::String(s) => clean_multiline(s),
+                        _ => display_value(entry, v),
+                    };
+                    // Only numeric/meterable values can drive the meter; don't
+                    // promise a meter for strings and other non-meterable types.
+                    let hover = if meterable {
+                        "click to show meter · right-click for options"
+                    } else {
+                        "right-click for options"
+                    };
+                    let mut text = egui::RichText::new(preview);
+                    if pending {
+                        text = text.color(PENDING_COLOR);
+                    }
+                    let mut label = egui::Label::new(text).sense(egui::Sense::click());
+                    if is_string {
+                        label = label.wrap();
+                    }
+                    let vresp = ui.add(label).on_hover_text(hover);
                     if vresp.clicked() {
                         session.selected = Some(entry.path.clone());
                     }
@@ -2802,7 +2892,32 @@ fn editor(
                 });
             }
         }
-        Some(Value::String(_)) | None => {
+        Some(Value::String(s)) => {
+            // Pop-out multi-line editor (for SDPs and other long/multi-line
+            // values) alongside the inline field for quick single-line edits.
+            if ui
+                .button("Edit…")
+                .on_hover_text("Edit in a larger box")
+                .clicked()
+            {
+                session.string_edit = Some(StringEdit::new(entry, s));
+            }
+            if s.contains(['\n', '\r']) {
+                // A single-line field can't represent newlines (they'd tofu and a
+                // commit would mangle the value); edit multi-line strings via the
+                // pop-out instead, showing a line-break-preserving preview inline.
+                let mut text = egui::RichText::new(clean_multiline(s));
+                if session.pending.contains(&entry.path) {
+                    text = text.color(PENDING_COLOR);
+                }
+                ui.add(egui::Label::new(text).wrap());
+            } else {
+                text_commit_editor(ui, session, entry, commands, |s| {
+                    Some(Value::String(s.to_string()))
+                });
+            }
+        }
+        None => {
             text_commit_editor(ui, session, entry, commands, |s| {
                 Some(Value::String(s.to_string()))
             });

@@ -54,6 +54,10 @@ web-sys = { version = "0.3", features = [
     "Document",
     "Element",
     "HtmlCanvasElement",
+    "HtmlDocument",
+    "HtmlElement",
+    "HtmlTextAreaElement",
+    "Node",
     "Location",
 ] }
 console_error_panic_hook = "0.1"

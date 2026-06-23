@@ -182,6 +182,10 @@ pub struct TreeModel {
     /// stream identifier -> parameter paths, for routing StreamCollections.
     /// (Multiple parameters can share one identifier for packed streams.)
     pub stream_index: HashMap<i32, Vec<Vec<u32>>>,
+    /// Parameter paths whose value was set from a merged document since the last
+    /// [`TreeModel::take_value_updates`]. Lets the UI tell an authoritative value
+    /// (the provider spoke) from an optimistic one we wrote locally on a set.
+    pub value_updates: Vec<Vec<u32>>,
 }
 
 impl TreeModel {
@@ -191,6 +195,11 @@ impl TreeModel {
 
     pub fn get(&self, path: &[u32]) -> Option<&Entry> {
         self.entries.get(path)
+    }
+
+    /// Drain the parameter paths whose value the provider set since the last call.
+    pub fn take_value_updates(&mut self) -> Vec<Vec<u32>> {
+        std::mem::take(&mut self.value_updates)
     }
 
     /// Merge a decoded `Root` document into the tree.
@@ -232,6 +241,7 @@ impl TreeModel {
             for path in paths {
                 if let Some(e) = self.entries.get_mut(&path) {
                     e.value = Some(stream_value_for(e, &se.stream_value));
+                    self.value_updates.push(path);
                 }
             }
         }
@@ -316,6 +326,7 @@ impl TreeModel {
 
     fn ingest_parameter(&mut self, path: Vec<u32>, contents: Option<glow::ParameterContents>) {
         self.upsert(path.clone(), Kind::Parameter);
+        let mut value_set = false;
         if let Some(c) = contents {
             let e = self.entries.get_mut(&path).unwrap();
             if let Some(id) = c.identifier {
@@ -326,6 +337,7 @@ impl TreeModel {
             }
             if c.value_.is_some() {
                 e.value = c.value_;
+                value_set = true;
             }
             if c.r#type.is_some() {
                 e.param_type = c.r#type;
@@ -380,6 +392,10 @@ impl TreeModel {
                     })
                     .collect();
             }
+        }
+        // Record an authoritative value update (after the `e` borrow ends).
+        if value_set {
+            self.value_updates.push(path.clone());
         }
         // Register this parameter for stream routing (after the `e` borrow ends).
         if let Some(sid) = self.entries.get(&path).and_then(|e| e.stream_identifier) {

@@ -950,6 +950,20 @@ impl Root {
         Root::from_element(RootElement::QualifiedMatrix(qm))
     }
 
+    /// Re-read the parameter at `path`: a `getDirectory` addressed as a
+    /// `QualifiedParameter` so the provider returns that parameter's current
+    /// contents (including its value). Used to refresh a value after a set when
+    /// the provider doesn't echo it back unsolicited.
+    pub fn get_parameter_at(path: &[u32]) -> Self {
+        let command = Element::Command(Command::get_directory(Some(field_flags::ALL)));
+        let qp = QualifiedParameter {
+            path: RelativeOid::from_arcs(path),
+            contents: None,
+            children: Some(ElementCollection(vec![ElementEntry(command)])),
+        };
+        Root::from_element(RootElement::QualifiedParameter(qp))
+    }
+
     /// Subscribe to value changes of the parameter at `path`.
     pub fn subscribe_at(path: &[u32]) -> Self {
         Root::command_on_parameter(path, command_type::SUBSCRIBE)
@@ -1181,6 +1195,26 @@ mod tests {
             panic!("expected child command")
         };
         assert_eq!(cmd.number, command_type::SUBSCRIBE);
+    }
+
+    #[test]
+    fn get_parameter_request_roundtrips() {
+        let req = Root::get_parameter_at(&[0, 1, 0]);
+        let bytes = encode_root(&req).unwrap();
+        let back = decode_root(&bytes).unwrap();
+        let Root::Elements(coll) = back else {
+            panic!("expected elements")
+        };
+        // Addressed as a QualifiedParameter (not a Node) so picky providers
+        // return the parameter's value rather than ignoring the request.
+        let RootElementEntry(RootElement::QualifiedParameter(qp)) = &coll.0[0] else {
+            panic!("expected qualified parameter")
+        };
+        assert_eq!(qp.path.arcs(), vec![0, 1, 0]);
+        let ElementEntry(Element::Command(cmd)) = &qp.children.as_ref().unwrap().0[0] else {
+            panic!("expected child command")
+        };
+        assert_eq!(cmd.number, command_type::GET_DIRECTORY);
     }
 
     #[test]
