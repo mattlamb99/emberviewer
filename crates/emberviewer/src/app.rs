@@ -339,6 +339,13 @@ impl App {
             update: crate::update::UpdateStatus::Idle,
             update_rx: None,
         };
+        // Resume debug logging if it was on at last shutdown.
+        if app.settings.debug_logging {
+            if let Err(e) = crate::debug_log::set_enabled(true) {
+                app.status_line = format!("debug log: {e}");
+                app.settings.debug_logging = false;
+            }
+        }
         // The theme is applied from within `ui()` (eframe overrides visuals set
         // here during construction, which is why the startup theme didn't stick).
         app.apply_startup_mode(&cc.egui_ctx.clone());
@@ -1586,6 +1593,40 @@ impl App {
                     });
                     ui.end_row();
                 });
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui
+                        .checkbox(&mut self.settings.debug_logging, "Enable debug log")
+                        .on_hover_text(
+                            "Capture connection events and the raw Ember+ frames sent and \
+                             received to a file, for diagnosing devices that misbehave in \
+                             the viewer. Off by default; the file can grow large.",
+                        )
+                        .changed()
+                    {
+                        if let Err(e) = crate::debug_log::set_enabled(self.settings.debug_logging) {
+                            self.status_line = format!("debug log: {e}");
+                            self.settings.debug_logging = false;
+                        }
+                        changed = true;
+                    }
+                    if ui
+                        .button("Open log folder")
+                        .on_hover_text("Show the debug-log folder in your file manager")
+                        .clicked()
+                    {
+                        if let Some(dir) = crate::debug_log::logs_dir() {
+                            let _ = std::fs::create_dir_all(&dir);
+                            // `open_log_folder` opens a path's parent folder.
+                            open_log_folder(&dir.join("debug.log").to_string_lossy());
+                        }
+                    }
+                });
+                if self.settings.debug_logging {
+                    if let Some(p) = crate::debug_log::current_path() {
+                        ui.weak(format!("→ {}", p.display()));
+                    }
+                }
                 ui.separator();
                 changed |= ui
                     .checkbox(
