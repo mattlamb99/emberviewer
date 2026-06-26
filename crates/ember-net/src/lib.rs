@@ -3,6 +3,6 @@
 pub mod connection;
 
 pub use connection::{
-    ConnError, Connection, Inbound, ProviderReader, ProviderWriter, Traffic, TrafficSnapshot,
-    DEFAULT_PORT,
+    frame_dump_enabled, init_frame_dump_from_env, set_frame_dump, ConnError, Connection, Inbound,
+    ProviderReader, ProviderWriter, Traffic, TrafficSnapshot, DEFAULT_PORT,
 };

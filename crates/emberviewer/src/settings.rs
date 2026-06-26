@@ -120,6 +120,10 @@ pub struct Settings {
     /// Optional path to append parameter-change logs to (empty = window only).
     #[serde(default)]
     pub log_file: String,
+    /// Capture a detailed debug log (connection events + raw Ember+ frames) to a
+    /// file, for diagnosing devices that misbehave in the viewer.
+    #[serde(default)]
+    pub debug_logging: bool,
     /// On launch, check GitHub for a newer release (at most once per 24h). This
     /// is the only thing that contacts a server other than the Ember+ devices.
     #[serde(default = "default_true")]
@@ -151,6 +155,7 @@ impl Default for Settings {
             server_open_lan: false,
             server_read_only: false,
             log_file: String::new(),
+            debug_logging: false,
             check_for_updates: true,
             last_update_check: 0,
             last_connected: Vec::new(),

@@ -1,6 +1,6 @@
 //! Async TCP transport for Ember+: S101 framing over a [`tokio`] socket.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -190,14 +190,28 @@ pub enum Inbound {
     KeepAliveRequest,
 }
 
-/// Whether full inbound frame dumping is enabled (env `EMBER_DUMP=1`).
-fn dump_frames() -> bool {
-    static D: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *D.get_or_init(|| {
-        std::env::var("EMBER_DUMP")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false)
-    })
+/// Whether full hex dumping of every Ember+ frame (sent and received) is on.
+/// Logged via `tracing` at info level; the GUI's "Enable debug log" option flips
+/// this at runtime, and `EMBER_DUMP=1` seeds it at startup (developer workflow).
+static FRAME_DUMP: AtomicBool = AtomicBool::new(false);
+
+/// Turn frame dumping on or off at runtime.
+pub fn set_frame_dump(on: bool) {
+    FRAME_DUMP.store(on, Ordering::Relaxed);
+}
+
+/// Whether frame dumping is currently enabled.
+pub fn frame_dump_enabled() -> bool {
+    FRAME_DUMP.load(Ordering::Relaxed)
+}
+
+/// Seed frame dumping from the `EMBER_DUMP` env var. Call once at startup before
+/// the GUI may override it; keeps the old developer env-var workflow working.
+pub fn init_frame_dump_from_env() {
+    let on = std::env::var("EMBER_DUMP")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    set_frame_dump(on);
 }
 
 /// Full hex of a payload.
@@ -237,7 +251,7 @@ impl ProviderReader {
                 self.traffic.rx_frames.fetch_add(1, Ordering::Relaxed);
                 match item {
                     Ok(Incoming::EmberPayload(payload)) => {
-                        if dump_frames() {
+                        if frame_dump_enabled() {
                             tracing::info!(
                                 "RX payload {} bytes: {}",
                                 payload.len(),
@@ -283,6 +297,9 @@ impl ProviderWriter {
     /// Send a Glow `Root` document.
     pub async fn send(&mut self, root: &Root) -> Result<(), ConnError> {
         let payload = glow::encode_root(root).map_err(|e| ConnError::Encode(e.to_string()))?;
+        if frame_dump_enabled() {
+            tracing::info!("TX payload {} bytes: {}", payload.len(), full_hex(&payload));
+        }
         let frames = s101::encode_ember(&payload);
         self.write.write_all(&frames).await?;
         self.write.flush().await?;

@@ -8,6 +8,8 @@ mod address_book;
 #[cfg(not(target_arch = "wasm32"))]
 mod app;
 #[cfg(not(target_arch = "wasm32"))]
+mod debug_log;
+#[cfg(not(target_arch = "wasm32"))]
 mod discovery;
 #[cfg(not(target_arch = "wasm32"))]
 mod hub;
@@ -32,11 +34,13 @@ mod wire;
 /// Launch the native desktop application.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn run_native() -> eframe::Result {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        .init();
+    // Seed frame dumping from EMBER_DUMP (developer workflow), then install the
+    // tracing subscriber: console output plus an off-by-default file layer that
+    // the GUI's "Enable debug log" option turns on.
+    ember_net::init_frame_dump_from_env();
+    debug_log::init(
+        tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+    );
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
