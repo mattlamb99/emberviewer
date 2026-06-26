@@ -166,8 +166,9 @@ fn prune_old(dir: &Path) {
 
 #[cfg(test)]
 mod tests {
+    // `fmt`, `EnvFilter`, the prelude traits, and the private types all come in
+    // via the parent glob; re-importing them would be a (denied) unused import.
     use super::*;
-    use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
     /// A scoped file layer captures our crates' frame dumps and filters out
     /// unrelated noise - the core of what the debug log relies on.
