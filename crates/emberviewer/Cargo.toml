@@ -8,6 +8,11 @@ description = "Cross-platform Ember+ viewer - browse providers, view and set val
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+# Embeds the Windows .exe icon resource (build.rs gates this to windows targets;
+# it supports cross-compiling from Linux via the mingw resource compiler).
+[build-dependencies]
+winresource = "0.1"
+
 # Dependencies common to the native app and the wasm browser client.
 [dependencies]
 ember-proto = { path = "../ember-proto" }

@@ -193,6 +193,10 @@ pub struct App {
     discovery: Option<crate::discovery::Discovery>,
     show_discovery: bool,
     show_about: bool,
+    /// Screen position to anchor the About window to on the frame it opens, so it
+    /// appears next to the About button (where the user's focus is) rather than at
+    /// a stale/default corner. Consumed (set to `None`) once applied.
+    about_anchor: Option<egui::Pos2>,
     /// Theme currently applied to the egui context (`None` until the first frame
     /// applies it). Re-applied whenever it differs from `settings.dark_mode`.
     applied_dark: Option<bool>,
@@ -331,6 +335,7 @@ impl App {
             discovery: None,
             show_discovery: false,
             show_about: false,
+            about_anchor: None,
             applied_dark: None,
             locked,
             hubs,
@@ -954,8 +959,14 @@ impl eframe::App for App {
                     }
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.selectable_label(self.show_about, "About").clicked() {
+                    let about_btn = ui.selectable_label(self.show_about, "About");
+                    if about_btn.clicked() {
                         self.show_about = !self.show_about;
+                        // Anchor the window just under the button so it opens where
+                        // the user just clicked (their eyes are already there).
+                        if self.show_about {
+                            self.about_anchor = Some(about_btn.rect.right_bottom());
+                        }
                     }
                     // Accent "Update available" chip (just left of About) when a
                     // newer release exists; clicking it opens the release page.
@@ -1823,62 +1834,67 @@ impl App {
         let mut open = self.show_about;
         let status = self.update.clone();
         let mut check_now = false;
-        egui::Window::new("About")
+        let mut about = egui::Window::new("About")
             .open(&mut open)
             .resizable(false)
-            .collapsible(false)
-            .show(ctx, |ui| {
-                ui.heading(egui::RichText::new("emberviewer").color(ACCENT));
-                ui.label("A cross-platform Ember+ viewer");
-                ui.add_space(4.0);
-                ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
-                ui.label("An open replacement for Lawo's EmberPlusView.");
-                ui.add_space(6.0);
-                ui.separator();
-                ui.add_space(6.0);
+            .collapsible(false);
+        // On the frame it opens, snap the window's top-right corner just below the
+        // About button. Only for that frame, so the user can still drag it after.
+        if let Some(anchor) = self.about_anchor.take() {
+            about = about.current_pos(anchor).pivot(egui::Align2::RIGHT_TOP);
+        }
+        about.show(ctx, |ui| {
+            ui.heading(egui::RichText::new("emberviewer").color(ACCENT));
+            ui.label("A cross-platform Ember+ viewer");
+            ui.add_space(4.0);
+            ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
+            ui.label("An open replacement for Lawo's EmberPlusView.");
+            ui.add_space(6.0);
+            ui.separator();
+            ui.add_space(6.0);
 
-                // Update status + a manual "Check for updates".
-                match &status {
-                    UpdateStatus::Available { version, url } => {
-                        ui.horizontal(|ui| {
-                            paint_dot(ui, ACCENT);
-                            ui.label(
-                                egui::RichText::new(format!("Update available: {version}"))
-                                    .color(ACCENT)
-                                    .strong(),
-                            );
-                        });
-                        ui.hyperlink_to("Download the latest release", url);
-                    }
-                    UpdateStatus::UpToDate => {
-                        ui.label("You're on the latest version.");
-                    }
-                    UpdateStatus::Checking => {
-                        ui.label("Checking for updates…");
-                    }
-                    UpdateStatus::Failed(e) => {
-                        ui.label(egui::RichText::new("Couldn't check for updates.").weak())
-                            .on_hover_text(e.as_str());
-                    }
-                    UpdateStatus::Idle => {}
+            // Update status + a manual "Check for updates".
+            match &status {
+                UpdateStatus::Available { version, url } => {
+                    ui.horizontal(|ui| {
+                        paint_dot(ui, ACCENT);
+                        ui.label(
+                            egui::RichText::new(format!("Update available: {version}"))
+                                .color(ACCENT)
+                                .strong(),
+                        );
+                    });
+                    ui.hyperlink_to("Download the latest release", url);
                 }
-                let checking = matches!(status, UpdateStatus::Checking);
-                if ui
-                    .add_enabled(!checking, egui::Button::new("Check for updates"))
-                    .clicked()
-                {
-                    check_now = true;
+                UpdateStatus::UpToDate => {
+                    ui.label("You're on the latest version.");
                 }
+                UpdateStatus::Checking => {
+                    ui.label("Checking for updates…");
+                }
+                UpdateStatus::Failed(e) => {
+                    ui.label(egui::RichText::new("Couldn't check for updates.").weak())
+                        .on_hover_text(e.as_str());
+                }
+                UpdateStatus::Idle => {}
+            }
+            let checking = matches!(status, UpdateStatus::Checking);
+            if ui
+                .add_enabled(!checking, egui::Button::new("Check for updates"))
+                .clicked()
+            {
+                check_now = true;
+            }
 
-                ui.add_space(6.0);
-                ui.separator();
-                ui.add_space(6.0);
-                ui.hyperlink_to(
-                    "GitHub repository",
-                    "https://github.com/mattlamb99/emberviewer",
-                );
-                ui.hyperlink_to("Website / docs", "https://mattlamb99.github.io/emberviewer");
-            });
+            ui.add_space(6.0);
+            ui.separator();
+            ui.add_space(6.0);
+            ui.hyperlink_to(
+                "GitHub repository",
+                "https://github.com/mattlamb99/emberviewer",
+            );
+            ui.hyperlink_to("Website / docs", "https://mattlamb99.github.io/emberviewer");
+        });
         self.show_about = open;
         if check_now {
             self.maybe_check_for_updates(true);

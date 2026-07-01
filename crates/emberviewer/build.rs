@@ -20,4 +20,17 @@ fn main() {
         );
     }
     println!("cargo:rerun-if-changed=web-dist/index.html");
+
+    // Embed the application icon into the Windows .exe resource so Explorer, the
+    // title bar, and the taskbar show it. Gated on the *target* OS so it also runs
+    // when cross-compiling to x86_64-pc-windows-gnu from Linux (winresource drives
+    // the mingw resource compiler). No-op on other targets.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        let mut res = winresource::WindowsResource::new();
+        res.set_icon("assets/icon.ico");
+        if let Err(e) = res.compile() {
+            println!("cargo:warning=failed to embed Windows icon: {e}");
+        }
+    }
+    println!("cargo:rerun-if-changed=assets/icon.ico");
 }

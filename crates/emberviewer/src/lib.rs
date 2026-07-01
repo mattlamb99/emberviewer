@@ -42,10 +42,16 @@ pub fn run_native() -> eframe::Result {
         tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
     );
 
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([900.0, 640.0])
+        .with_title("emberviewer");
+    // Window/taskbar icon (all platforms). On Windows the .exe also carries an
+    // embedded icon resource (see build.rs) for Explorer and the taskbar.
+    if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")) {
+        viewport = viewport.with_icon(std::sync::Arc::new(icon));
+    }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([900.0, 640.0])
-            .with_title("emberviewer"),
+        viewport,
         ..Default::default()
     };
 
