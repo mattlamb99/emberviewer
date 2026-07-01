@@ -259,6 +259,7 @@ impl TreeModel {
             RootElement::QualifiedMatrix(qm) => self.ingest_matrix(
                 qm.path.arcs(),
                 qm.contents,
+                qm.children,
                 qm.targets,
                 qm.sources,
                 qm.connections,
@@ -283,7 +284,14 @@ impl TreeModel {
             Element::Matrix(m) => {
                 let mut path = parent.to_vec();
                 path.push(m.number as u32);
-                self.ingest_matrix(path, m.contents, m.targets, m.sources, m.connections);
+                self.ingest_matrix(
+                    path,
+                    m.contents,
+                    m.children,
+                    m.targets,
+                    m.sources,
+                    m.connections,
+                );
             }
             Element::Function(f) => {
                 let mut path = parent.to_vec();
@@ -410,6 +418,7 @@ impl TreeModel {
         &mut self,
         path: Vec<u32>,
         contents: Option<glow::MatrixContents>,
+        children: Option<glow::ElementCollection>,
         targets: Option<glow::TargetCollection>,
         sources: Option<glow::SourceCollection>,
         connections: Option<glow::ConnectionCollection>,
@@ -487,6 +496,14 @@ impl TreeModel {
                     }
                     _ => *set = srcs, // absolute / tally: replace
                 }
+            }
+        }
+        // Some providers (e.g. Lawo VirtualPatchBay) return the matrix's label
+        // sub-tree inline as the matrix's `children` (the `labels[].basePath`
+        // Labels/targets/sources nodes). Ingest them so the names resolve.
+        if let Some(coll) = children {
+            for entry in coll.0 {
+                self.ingest_element(&path, entry.0);
             }
         }
     }
@@ -1028,6 +1045,47 @@ mod tests {
         assert_eq!(
             m.source_labels.get(&0).map(String::as_str),
             Some("i_o_module.input[0].sdi")
+        );
+    }
+
+    /// A Lawo VirtualPatchBay matrix [1,6] returns its label sub-tree INLINE as
+    /// the matrix's own `children` field (Labels node [1,6,1] with targets/sources
+    /// sub-nodes of string params), rather than as a separately fetched subtree.
+    /// The matrix's `labels[].basePath` is the absolute path [1,6,1]. Ingesting the
+    /// matrix must flatten those inline children into the tree so the target/source
+    /// names resolve. Uses the device's real getDirectory bytes for node [1].
+    #[test]
+    fn vpb_matrix_labels_resolve_from_inline_children() {
+        let hex = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/data/vpb_matrix_dir.hex"
+        ))
+        .expect("fixture present");
+        let mut tree = TreeModel::new();
+        for r in glow::decode_roots(&unhex(hex.trim())).into_iter().flatten() {
+            tree.merge(r);
+        }
+        // The inline Labels sub-tree must have been flattened into the tree.
+        assert!(
+            tree.get(&[1, 6, 1, 1, 1]).is_some(),
+            "inline label param [1,6,1,1,1] was dropped"
+        );
+        let m = tree
+            .get(&[1, 6])
+            .and_then(|e| e.matrix.as_ref())
+            .expect("matrix present at [1,6]");
+        assert_eq!(m.label_paths, vec![vec![1, 6, 1]]);
+        assert_eq!(
+            m.target_labels.get(&1).map(String::as_str),
+            Some("To 1[C:WDM Driver]"),
+            "target labels did not resolve: {:?}",
+            m.target_labels
+        );
+        assert_eq!(
+            m.source_labels.get(&1).map(String::as_str),
+            Some("From 1[C:WDM Driver]"),
+            "source labels did not resolve: {:?}",
+            m.source_labels
         );
     }
 
