@@ -827,9 +827,40 @@ fn param_editor(
         }
         Some(Value::Integer(i)) => {
             if writable {
-                let mut v = *i;
-                if ui.add(egui::DragValue::new(&mut v)).changed() {
-                    set(commands, Value::Integer(v));
+                if let (Some(Value::Integer(lo)), Some(Value::Integer(hi))) =
+                    (&entry.minimum, &entry.maximum)
+                {
+                    // Bounded: a slider matching the desktop frontend, with the
+                    // same factor scaling / suffix in the readout, so a web user
+                    // can't drag an out-of-range SetValue to live hardware.
+                    let mut v = (*i).clamp(*lo, *hi);
+                    let factor = entry.factor.unwrap_or(1).max(1) as f64;
+                    let suffix = widgets::format_suffix(entry);
+                    let resp = ui.add(
+                        egui::Slider::new(&mut v, *lo..=*hi)
+                            .custom_formatter(move |n, _| format!("{}{}", n / factor, suffix)),
+                    );
+                    if resp.changed() {
+                        set(commands, Value::Integer(v.clamp(*lo, *hi)));
+                    }
+                } else {
+                    // Unbounded / half-bounded: a drag field clamped to whatever
+                    // single bound the parameter advertised.
+                    let lo = match &entry.minimum {
+                        Some(Value::Integer(lo)) => *lo,
+                        _ => i64::MIN,
+                    };
+                    let hi = match &entry.maximum {
+                        Some(Value::Integer(hi)) => *hi,
+                        _ => i64::MAX,
+                    };
+                    let mut v = (*i).clamp(lo, hi);
+                    if ui
+                        .add(egui::DragValue::new(&mut v).range(lo..=hi))
+                        .changed()
+                    {
+                        set(commands, Value::Integer(v.clamp(lo, hi)));
+                    }
                 }
             } else {
                 ro_num(ui, widgets::display_value(entry, &Value::Integer(*i)));
@@ -837,9 +868,36 @@ fn param_editor(
         }
         Some(Value::Real(r)) => {
             if writable {
-                let mut v = r.to_f64();
-                if ui.add(egui::DragValue::new(&mut v).speed(0.1)).changed() {
-                    set(commands, Value::Real(v.into()));
+                if let (Some(Value::Real(lo)), Some(Value::Real(hi))) =
+                    (&entry.minimum, &entry.maximum)
+                {
+                    // Bounded: a slider matching the desktop frontend.
+                    let (lo, hi) = (lo.to_f64(), hi.to_f64());
+                    let mut v = r.to_f64().clamp(lo, hi);
+                    let suffix = widgets::format_suffix(entry);
+                    let resp = ui.add(
+                        egui::Slider::new(&mut v, lo..=hi)
+                            .custom_formatter(move |n, _| format!("{n:.3}{suffix}")),
+                    );
+                    if resp.changed() {
+                        set(commands, Value::Real(v.clamp(lo, hi).into()));
+                    }
+                } else {
+                    let lo = match &entry.minimum {
+                        Some(Value::Real(lo)) => lo.to_f64(),
+                        _ => f64::NEG_INFINITY,
+                    };
+                    let hi = match &entry.maximum {
+                        Some(Value::Real(hi)) => hi.to_f64(),
+                        _ => f64::INFINITY,
+                    };
+                    let mut v = r.to_f64().clamp(lo, hi);
+                    if ui
+                        .add(egui::DragValue::new(&mut v).speed(0.1).range(lo..=hi))
+                        .changed()
+                    {
+                        set(commands, Value::Real(v.clamp(lo, hi).into()));
+                    }
                 }
             } else {
                 ro_num(ui, widgets::display_value(entry, &Value::Real(r.clone())));
