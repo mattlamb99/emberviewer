@@ -1108,7 +1108,7 @@ dependencies = [
 
 [[package]]
 name = "ember-net"
-version = "0.2.10"
+version = "0.2.11"
 dependencies = [
  "ember-proto",
  "thiserror 2.0.18",
@@ -1118,7 +1118,7 @@ dependencies = [
 
 [[package]]
 name = "ember-proto"
-version = "0.2.10"
+version = "0.2.11"
 dependencies = [
  "rasn",
  "thiserror 2.0.18",
@@ -1127,7 +1127,7 @@ dependencies = [
 
 [[package]]
 name = "ember-web-proto"
-version = "0.2.10"
+version = "0.2.11"
 dependencies = [
  "serde",
  "serde_json",
@@ -1135,7 +1135,7 @@ dependencies = [
 
 [[package]]
 name = "emberviewer"
-version = "0.2.10"
+version = "0.2.11"
 dependencies = [
  "anyhow",
  "axum",
