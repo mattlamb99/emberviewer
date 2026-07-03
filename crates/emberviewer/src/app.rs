@@ -460,6 +460,11 @@ impl App {
         let addr = format!("{}:{}", provider.host, provider.port);
         let handle =
             ConnectionHandle::open(&self.hubs, id, addr.clone(), self.settings.send_keepalive);
+        // Re-walk the root explicitly: if the hub was already live (another
+        // window/web client holds it), the connection task's initial walk
+        // happened long ago and this fresh session would otherwise never
+        // receive the tree. On a fresh hub this is a harmless duplicate.
+        handle.send(NetCommand::GetDirectory(vec![]));
         self.sessions.insert(
             id,
             Session {

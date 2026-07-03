@@ -52,6 +52,11 @@ pub struct Hub {
     /// not attach new viewers to such a zombie - their commands would go
     /// nowhere and no events would ever arrive.
     alive: Arc<AtomicBool>,
+    /// Latest connection-status event (Connected/Reconnecting/...), replayed to
+    /// every new subscriber. A viewer attaching to an already-live hub (second
+    /// window, web client, or one that raced the connect) would otherwise never
+    /// hear the status and sit on "connecting" forever.
+    last_status: Arc<Mutex<Option<Arc<NetEvent>>>>,
     // Dropped when the Hub is dropped, which signals the connection task to stop.
     _shutdown: oneshot::Sender<()>,
 }
@@ -70,10 +75,12 @@ impl Hub {
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let traffic = Arc::new(Traffic::default());
         let alive = Arc::new(AtomicBool::new(true));
+        let last_status = Arc::new(Mutex::new(None));
         let task = run_connection(
             addr,
             msg_rx,
             evt_tx.clone(),
+            last_status.clone(),
             ctx,
             keepalive,
             traffic.clone(),
@@ -97,6 +104,7 @@ impl Hub {
             next_id: AtomicU64::new(0),
             traffic,
             alive,
+            last_status,
             _shutdown: shutdown_tx,
         }
     }
@@ -118,13 +126,23 @@ impl Hub {
         let _ = self.msg_tx.send(HubMsg::Retarget(addr));
     }
 
-    /// Attach a new subscriber (the desktop UI, or a web client).
+    /// Attach a new subscriber (the desktop UI, or a web client). The hub's
+    /// current connection status (if any) is replayed as the subscriber's
+    /// first event, so a viewer attaching to an already-live connection - or
+    /// one that raced the connect - doesn't sit on "connecting" forever.
     pub fn subscribe(&self) -> Subscriber {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        // Take the receiver BEFORE reading the snapshot: any status emitted
+        // after the snapshot is then guaranteed to reach the receiver, so the
+        // subscriber can never miss a transition (worst case it sees the same
+        // status twice, which is harmless).
+        let evt_rx = self.evt_tx.subscribe();
+        let replay = self.last_status.lock().unwrap().clone();
         Subscriber {
             id,
             msg_tx: self.msg_tx.clone(),
-            evt_rx: self.evt_tx.subscribe(),
+            evt_rx,
+            replay,
         }
     }
 }
@@ -134,6 +152,8 @@ pub struct Subscriber {
     id: SubscriberId,
     msg_tx: mpsc::UnboundedSender<HubMsg>,
     evt_rx: broadcast::Receiver<Arc<NetEvent>>,
+    /// Status snapshot delivered before any broadcast events (see subscribe).
+    replay: Option<Arc<NetEvent>>,
 }
 
 impl Subscriber {
@@ -147,6 +167,9 @@ impl Subscriber {
     pub fn drain(&mut self) -> Vec<NetEvent> {
         use broadcast::error::TryRecvError;
         let mut out = Vec::new();
+        if let Some(ev) = self.replay.take() {
+            out.push((*ev).clone());
+        }
         loop {
             match self.evt_rx.try_recv() {
                 Ok(ev) => out.push((*ev).clone()),
@@ -163,6 +186,9 @@ impl Subscriber {
     /// connection has ended.
     pub async fn recv(&mut self) -> Option<Arc<NetEvent>> {
         use broadcast::error::RecvError;
+        if let Some(ev) = self.replay.take() {
+            return Some(ev);
+        }
         loop {
             match self.evt_rx.recv().await {
                 Ok(ev) => return Some(ev),
@@ -275,13 +301,19 @@ async fn run_connection(
     mut addr: String,
     mut msg_rx: mpsc::UnboundedReceiver<HubMsg>,
     evt_tx: broadcast::Sender<Arc<NetEvent>>,
+    last_status: Arc<Mutex<Option<Arc<NetEvent>>>>,
     ctx: egui::Context,
     keepalive: bool,
     traffic: Arc<Traffic>,
     mut shutdown_rx: oneshot::Receiver<()>,
 ) {
     let emit = |e: NetEvent| {
-        let _ = evt_tx.send(Arc::new(e));
+        let ev = Arc::new(e);
+        // Remember the latest status (not documents) for late subscribers.
+        if !matches!(*ev, NetEvent::Document { .. }) {
+            *last_status.lock().unwrap() = Some(ev.clone());
+        }
+        let _ = evt_tx.send(ev);
         ctx.request_repaint();
     };
 
@@ -607,6 +639,47 @@ mod tests {
         tokio::time::timeout(timeout, fut)
             .await
             .expect("timed out waiting for a document");
+    }
+
+    /// Regression: a subscriber attaching to an already-connected hub used to
+    /// miss the `Connected` status (broadcast long before it subscribed) and
+    /// sat on "connecting" forever. The hub must replay its latest status to
+    /// every new subscriber.
+    #[test]
+    fn late_subscriber_gets_status_replayed() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let reg = HubRegistry::new(rt.handle().clone(), egui::Context::default());
+        rt.block_on(async {
+            // Fake provider that accepts and stays silent (no events after
+            // Connected, so only the replay can tell lease2 the state).
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap().to_string();
+            tokio::spawn(async move {
+                let mut socks = Vec::new();
+                loop {
+                    let Ok((sock, _)) = listener.accept().await else {
+                        break;
+                    };
+                    socks.push(sock); // keep sockets open
+                }
+            });
+
+            let deadline = Duration::from_secs(5);
+            let mut lease1 = reg.open(9, addr.clone(), false);
+            let first = tokio::time::timeout(deadline, lease1.recv())
+                .await
+                .expect("timed out waiting for initial status")
+                .expect("hub closed");
+            assert!(matches!(*first, NetEvent::Connected), "got {first:?}");
+
+            // A second viewer attaching later must learn the status instantly.
+            let mut lease2 = reg.open(9, addr, false);
+            let replay = tokio::time::timeout(Duration::from_millis(200), lease2.recv())
+                .await
+                .expect("no status replayed to the late subscriber")
+                .expect("hub closed");
+            assert!(matches!(*replay, NetEvent::Connected), "got {replay:?}");
+        });
     }
 
     /// Regression: after an explicit Disconnect ends the connection task, a
