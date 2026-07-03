@@ -186,6 +186,19 @@ pub struct TreeModel {
     /// [`TreeModel::take_value_updates`]. Lets the UI tell an authoritative value
     /// (the provider spoke) from an optimistic one we wrote locally on a set.
     pub value_updates: Vec<Vec<u32>>,
+    /// Subtree roots (matrix label `basePath` candidates and `parametersLocation`)
+    /// whose change requires re-running the matrix label/param resolvers. A merged
+    /// document only re-resolves when it is a matrix or touches one of these
+    /// subtrees, so a device streaming values at 10-50 Hz doesn't re-walk the tree
+    /// on every push.
+    matrix_watch: Vec<Vec<u32>>,
+    /// Set during ingest when a matrix was seen or a watched subtree was touched;
+    /// drives the end-of-merge re-resolve and is cleared once it runs.
+    matrix_dirty: bool,
+    /// How many times the matrix resolvers have run (test observability for the
+    /// dirty-flag optimization).
+    #[cfg(test)]
+    pub(crate) matrix_resolve_count: u64,
 }
 
 impl TreeModel {
@@ -209,7 +222,12 @@ impl TreeModel {
                 for entry in coll.0 {
                     self.ingest_root_element(entry.0);
                 }
-                self.resolve_matrix_labels();
+                // Only re-resolve when this document actually touched a matrix or a
+                // watched label/param subtree - not on every value-only push.
+                if self.matrix_dirty {
+                    self.resolve_matrix_labels();
+                    self.matrix_dirty = false;
+                }
             }
             Root::InvocationResult(ir) => {
                 if let Some(id) = ir.invocation_id {
@@ -309,6 +327,7 @@ impl TreeModel {
         children: Option<glow::ElementCollection>,
     ) {
         self.upsert(path.clone(), Kind::Node);
+        self.note_matrix_watch(&path);
         if let Some(c) = contents {
             let e = self.entries.get_mut(&path).unwrap();
             if let Some(id) = c.identifier {
@@ -334,6 +353,7 @@ impl TreeModel {
 
     fn ingest_parameter(&mut self, path: Vec<u32>, contents: Option<glow::ParameterContents>) {
         self.upsert(path.clone(), Kind::Parameter);
+        self.note_matrix_watch(&path);
         let mut value_set = false;
         if let Some(c) = contents {
             let e = self.entries.get_mut(&path).unwrap();
@@ -498,6 +518,29 @@ impl TreeModel {
                 }
             }
         }
+        // A matrix element always forces an end-of-merge re-resolve, and its label
+        // basePath candidates / parametersLocation are registered so a later
+        // document that lands in one of those subtrees (labels arriving after the
+        // matrix) re-resolves too.
+        self.matrix_dirty = true;
+        let (label_paths, ploc) = self
+            .entries
+            .get(&path)
+            .and_then(|e| e.matrix.as_ref())
+            .map(|m| (m.label_paths.clone(), m.params_location.clone()))
+            .unwrap_or_default();
+        for base in &label_paths {
+            for cand in label_base_candidates(&path, base) {
+                if !self.matrix_watch.contains(&cand) {
+                    self.matrix_watch.push(cand);
+                }
+            }
+        }
+        if let Some(ploc) = ploc {
+            if !self.matrix_watch.contains(&ploc) {
+                self.matrix_watch.push(ploc);
+            }
+        }
         // Some providers (e.g. Lawo VirtualPatchBay) return the matrix's label
         // sub-tree inline as the matrix's `children` (the `labels[].basePath`
         // Labels/targets/sources nodes). Ingest them so the names resolve.
@@ -550,6 +593,10 @@ impl TreeModel {
     /// basePath (a RELATIVE-OID whose anchor providers disagree on) is tried as an
     /// absolute path, then relative to the matrix's parent, then to the matrix.
     fn resolve_matrix_labels(&mut self) {
+        #[cfg(test)]
+        {
+            self.matrix_resolve_count += 1;
+        }
         let matrices: Vec<(Vec<u32>, Vec<Vec<u32>>)> = self
             .entries
             .values()
@@ -738,6 +785,19 @@ impl TreeModel {
                     m.param_sources_path = spath;
                 }
             }
+        }
+    }
+
+    /// Mark the tree dirty if `path` falls inside a registered matrix label /
+    /// parameter subtree, so the resolvers re-run at the end of this merge. Cheap:
+    /// a prefix check against the (small) set of watched subtree roots.
+    fn note_matrix_watch(&mut self, path: &[u32]) {
+        if self
+            .matrix_watch
+            .iter()
+            .any(|b| path.len() >= b.len() && path[..b.len()] == b[..])
+        {
+            self.matrix_dirty = true;
         }
     }
 
@@ -1374,5 +1434,64 @@ mod tests {
         // Budget exhausted with no children: give up (no forever-polling).
         let s = label_fetch_step(Some((90.0, LABEL_FETCH_MAX_ATTEMPTS)), false, 1000.0);
         assert!(!s.request && !s.pending);
+    }
+
+    /// The matrix resolvers only run when a merged document actually touches a
+    /// matrix or one of its label/param subtrees; an unrelated value push must
+    /// not re-walk the tree (the 10-50 Hz streaming case).
+    #[test]
+    fn matrix_resolve_is_dirty_gated() {
+        let mut tree = TreeModel::new();
+        tree.merge(node_doc(&[0], "dev"));
+        // A plain node document (no matrix) never resolves.
+        assert_eq!(tree.matrix_resolve_count, 0);
+
+        tree.merge(matrix_doc(&[0, 1], "M", 2, 0, &[(&[0, 2], "Targets")]));
+        let after_matrix = tree.matrix_resolve_count;
+        assert!(after_matrix > 0, "ingesting a matrix must resolve");
+
+        // The label subtree arriving after the matrix re-resolves and names bind.
+        tree.merge(node_doc(&[0, 2], "Targets"));
+        tree.merge(params_doc(&[
+            (&[0, 2, 0], "t0", Value::String("Out A".into()), 1),
+            (&[0, 2, 1], "t1", Value::String("Out B".into()), 1),
+        ]));
+        let after_labels = tree.matrix_resolve_count;
+        assert!(after_labels > after_matrix, "label subtree must re-resolve");
+        let m = tree.get(&[0, 1]).and_then(|e| e.matrix.as_ref()).unwrap();
+        assert_eq!(m.target_labels.get(&0).map(String::as_str), Some("Out A"));
+
+        // An unrelated node + parameter push (outside every watched subtree) must
+        // NOT trigger another resolve.
+        tree.merge(node_doc(&[0, 9], "meter"));
+        tree.merge(params_doc(&[(&[0, 9, 0], "level", Value::Integer(3), 1)]));
+        assert_eq!(
+            tree.matrix_resolve_count, after_labels,
+            "unrelated document must not re-resolve matrix labels"
+        );
+
+        // A value-only push to that unrelated parameter also must not re-resolve.
+        tree.merge(params_doc(&[(&[0, 9, 0], "level", Value::Integer(4), 1)]));
+        assert_eq!(tree.matrix_resolve_count, after_labels);
+    }
+
+    /// Labels that arrive BEFORE the matrix element still resolve: the matrix
+    /// document itself triggers the resolve once the label params are present.
+    #[test]
+    fn labels_before_matrix_resolve() {
+        let mut tree = TreeModel::new();
+        tree.merge(node_doc(&[0], "dev"));
+        tree.merge(node_doc(&[0, 2], "Targets"));
+        tree.merge(params_doc(&[
+            (&[0, 2, 0], "t0", Value::String("Out A".into()), 1),
+            (&[0, 2, 1], "t1", Value::String("Out B".into()), 1),
+        ]));
+        // No matrix yet -> nothing resolved.
+        assert_eq!(tree.matrix_resolve_count, 0);
+        // Matrix arrives last; its resolve sees the already-present label params.
+        tree.merge(matrix_doc(&[0, 1], "M", 2, 0, &[(&[0, 2], "Targets")]));
+        let m = tree.get(&[0, 1]).and_then(|e| e.matrix.as_ref()).unwrap();
+        assert_eq!(m.target_labels.get(&0).map(String::as_str), Some("Out A"));
+        assert_eq!(m.target_labels.get(&1).map(String::as_str), Some("Out B"));
     }
 }
