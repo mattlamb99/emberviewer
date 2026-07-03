@@ -9,7 +9,7 @@
 //! viewers are attached. Dropping the `Hub` shuts the connection down.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
@@ -47,6 +47,11 @@ pub struct Hub {
     next_id: AtomicU64,
     // Shared byte/frame counters for this provider's socket (read by the UI).
     traffic: Arc<Traffic>,
+    /// False once the connection task has exited. A `Hub` can outlive its task
+    /// (leases still hold the `Arc` after a disconnect), and the registry must
+    /// not attach new viewers to such a zombie - their commands would go
+    /// nowhere and no events would ever arrive.
+    alive: Arc<AtomicBool>,
     // Dropped when the Hub is dropped, which signals the connection task to stop.
     _shutdown: oneshot::Sender<()>,
 }
@@ -64,7 +69,8 @@ impl Hub {
         let (evt_tx, _) = broadcast::channel(EVENT_CAPACITY);
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let traffic = Arc::new(Traffic::default());
-        rt.spawn(run_connection(
+        let alive = Arc::new(AtomicBool::new(true));
+        let task = run_connection(
             addr,
             msg_rx,
             evt_tx.clone(),
@@ -72,14 +78,33 @@ impl Hub {
             keepalive,
             traffic.clone(),
             shutdown_rx,
-        ));
+        );
+        let alive_flag = alive.clone();
+        rt.spawn(async move {
+            // Guard (not a plain store) so the flag clears on panic/cancel too.
+            struct Done(Arc<AtomicBool>);
+            impl Drop for Done {
+                fn drop(&mut self) {
+                    self.0.store(false, Ordering::Relaxed);
+                }
+            }
+            let _done = Done(alive_flag);
+            task.await;
+        });
         Hub {
             msg_tx,
             evt_tx,
             next_id: AtomicU64::new(0),
             traffic,
+            alive,
             _shutdown: shutdown_tx,
         }
+    }
+
+    /// Whether the connection task is still running. False after an explicit
+    /// disconnect ends the task even though leases may still hold the hub.
+    pub fn is_alive(&self) -> bool {
+        self.alive.load(Ordering::Relaxed)
     }
 
     /// Current cumulative byte/frame totals for this provider's socket.
@@ -169,10 +194,17 @@ impl HubRegistry {
     }
 
     /// Attach a viewer to provider `id`, reusing the live connection if one
-    /// exists or spawning it (connecting to `addr`) otherwise.
+    /// exists or spawning it (connecting to `addr`) otherwise. A hub whose
+    /// task has already exited (e.g. after a disconnect, with stale leases
+    /// still holding it) is replaced, never reused - attaching to it would
+    /// silently do nothing.
     pub fn open(&self, id: u64, addr: String, keepalive: bool) -> HubLease {
         let mut map = self.inner.lock().unwrap();
-        let hub = match map.get(&id).and_then(Weak::upgrade) {
+        let hub = match map
+            .get(&id)
+            .and_then(Weak::upgrade)
+            .filter(|h| h.is_alive())
+        {
             Some(h) => h,
             None => {
                 let h = Arc::new(Hub::spawn(&self.rt, addr, self.ctx.clone(), keepalive));
@@ -558,6 +590,89 @@ mod tests {
         let reg = HubRegistry::new(rt.handle().clone(), egui::Context::default());
         // Nothing is connected to id 42; retargeting it must not panic.
         reg.retarget(42, "127.0.0.1:9000".into());
+    }
+
+    /// Wait until `lease` yields a Document event (fails the test on timeout or
+    /// a closed channel).
+    async fn wait_for_document(lease: &mut HubLease, timeout: Duration) {
+        let fut = async {
+            loop {
+                match lease.recv().await {
+                    Some(ev) if matches!(&*ev, NetEvent::Document { .. }) => return,
+                    Some(_) => {}
+                    None => panic!("hub channel closed while waiting for a document"),
+                }
+            }
+        };
+        tokio::time::timeout(timeout, fut)
+            .await
+            .expect("timed out waiting for a document");
+    }
+
+    /// Regression: after an explicit Disconnect ends the connection task, a
+    /// surviving lease keeps the `Hub` alive in the registry as a `Weak` that
+    /// still upgrades. `open` used to hand that dead hub to the next viewer,
+    /// whose commands then went nowhere and whose events never arrived.
+    #[test]
+    fn disconnect_does_not_leave_zombie_hub_in_registry() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let reg = HubRegistry::new(rt.handle().clone(), egui::Context::default());
+        rt.block_on(async {
+            // Fake provider: accepts any number of connections and streams a
+            // small document every 25ms, so a live subscriber always receives
+            // events promptly (and a dead one times out).
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap().to_string();
+            tokio::spawn(async move {
+                loop {
+                    let Ok((mut sock, _)) = listener.accept().await else {
+                        break;
+                    };
+                    tokio::spawn(async move {
+                        use tokio::io::AsyncWriteExt;
+                        let payload = ember_proto::glow::encode_root(
+                            &ember_proto::glow::Root::get_directory_at(&[1]),
+                        )
+                        .unwrap();
+                        let frame = ember_proto::s101::encode_ember(&payload);
+                        loop {
+                            if sock.write_all(&frame).await.is_err() {
+                                return;
+                            }
+                            tokio::time::sleep(Duration::from_millis(25)).await;
+                        }
+                    });
+                }
+            });
+
+            let deadline = Duration::from_secs(5);
+            let mut lease1 = reg.open(7, addr.clone(), false);
+            wait_for_document(&mut lease1, deadline).await;
+
+            // Explicit Disconnect ends the task while lease1 still holds the
+            // hub Arc (the zombie setup). Wait for the terminal event, then
+            // give the task a beat to fully unwind.
+            lease1.send(NetCommand::Disconnect);
+            let fut = async {
+                loop {
+                    match lease1.recv().await {
+                        Some(ev) if matches!(&*ev, NetEvent::Disconnected(_)) => return,
+                        Some(_) => {}
+                        None => return,
+                    }
+                }
+            };
+            tokio::time::timeout(deadline, fut)
+                .await
+                .expect("no Disconnected event");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+
+            // A fresh open must spawn a new hub; on the old dead one this
+            // would hang forever (no task to connect or broadcast).
+            let mut lease2 = reg.open(7, addr, false);
+            wait_for_document(&mut lease2, deadline).await;
+            drop(lease1);
+        });
     }
 
     #[test]

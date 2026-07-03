@@ -15,7 +15,9 @@ use axum::extract::{Query, State};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::get;
 use axum::Router;
-use ember_web_proto::{encode_doc_frame, ClientMsg, ServerMsg, WireNode, WireProvider};
+use ember_web_proto::{
+    encode_doc_frame, ClientMsg, ServerMsg, WireCommand, WireNode, WireProvider,
+};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::oneshot;
 
@@ -307,6 +309,16 @@ async fn handle_client_msg(
             }
         }
         ClientMsg::Command { id, cmd } => {
+            // A remote client's Disconnect only detaches *this* client (same as
+            // CloseProvider). It must never reach the shared hub, where it
+            // would tear down the device connection for every other viewer -
+            // including the desktop operator.
+            if matches!(cmd, WireCommand::Disconnect) {
+                if current.as_ref().is_some_and(|(c, _)| *c == id) {
+                    *current = None;
+                }
+                return;
+            }
             let Some(net_cmd) = command_from_wire(cmd) else {
                 return;
             };
