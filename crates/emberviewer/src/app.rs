@@ -314,8 +314,10 @@ impl App {
             .enable_all()
             .build()
             .expect("tokio runtime");
-        let book = AddressBook::load().unwrap_or_default();
-        let settings = Settings::load();
+        // Recovering loads: a corrupt store is moved aside to `.bak` (never
+        // silently clobbered by the next save) and the user is told.
+        let (book, book_note) = AddressBook::load_or_recover();
+        let (settings, settings_note) = Settings::load_or_recover();
         let locked = settings.lock_on_startup;
         let hubs = HubRegistry::new(rt.handle().clone(), cc.egui_ctx.clone());
         let mut app = App {
@@ -344,6 +346,11 @@ impl App {
             update: crate::update::UpdateStatus::Idle,
             update_rx: None,
         };
+        // Surface store-recovery notices where the user will see them.
+        for note in [book_note, settings_note].into_iter().flatten() {
+            tracing::warn!("{note}");
+            app.status_line = note;
+        }
         // Resume debug logging if it was on at last shutdown.
         if app.settings.debug_logging {
             if let Err(e) = crate::debug_log::set_enabled(true) {

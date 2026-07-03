@@ -463,6 +463,35 @@ impl AddressBook {
         Self::load_from(Self::store_path()?)
     }
 
+    /// Loads the default store, but never lets a corrupt file destroy data: on
+    /// any error the unreadable file is moved aside to `.bak` (so the next
+    /// save can't overwrite it) and an empty book is returned together with a
+    /// notice for the UI.
+    pub fn load_or_recover() -> (Self, Option<String>) {
+        match Self::store_path() {
+            Ok(path) => Self::load_or_recover_from(path),
+            Err(e) => (Self::default(), Some(format!("Address book: {e}"))),
+        }
+    }
+
+    /// [`load_or_recover`](Self::load_or_recover) against an explicit path.
+    pub fn load_or_recover_from(path: impl AsRef<Path>) -> (Self, Option<String>) {
+        let path = path.as_ref();
+        match Self::load_from(path) {
+            Ok(book) => (book, None),
+            Err(e) => {
+                let mut note = format!("Address book unreadable ({e})");
+                match crate::fsutil::quarantine(path) {
+                    Some(bak) => {
+                        note.push_str(&format!("; the file was kept as {}", bak.display()));
+                    }
+                    None => note.push_str("; starting with an empty address book"),
+                }
+                (Self::default(), Some(note))
+            }
+        }
+    }
+
     /// Loads the address book from an explicit path, returning a fresh empty
     /// book if the file does not exist.
     pub fn load_from(path: impl AsRef<Path>) -> Result<Self, AddressBookError> {
@@ -494,7 +523,8 @@ impl AddressBook {
             })?;
         }
         let json = serde_json::to_vec_pretty(self)?;
-        std::fs::write(path, json).map_err(|source| AddressBookError::Io {
+        // Atomic (temp + rename): a crash mid-save must not truncate the store.
+        crate::fsutil::write_atomic(path, &json).map_err(|source| AddressBookError::Io {
             path: path.to_path_buf(),
             source,
         })
@@ -720,6 +750,33 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let ab = AddressBook::load_from(&path).unwrap();
         assert_eq!(ab, AddressBook::default());
+    }
+
+    /// A corrupt store must be quarantined to `.bak` - not silently replaced -
+    /// so a subsequent save cannot destroy the user's provider list.
+    #[test]
+    fn corrupt_store_is_quarantined_not_clobbered() {
+        let dir = std::env::temp_dir().join(format!("emberviewer_corrupt_{}", std::process::id()));
+        let path = dir.join("address_book.json");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&path, b"{ not json !!").unwrap();
+
+        let (ab, note) = AddressBook::load_or_recover_from(&path);
+        assert_eq!(ab, AddressBook::default());
+        let note = note.expect("corruption must be reported");
+        assert!(note.contains(".bak"), "note should name the backup: {note}");
+        assert!(!path.exists(), "corrupt file must be moved aside");
+
+        // The next save writes a fresh store while the backup survives.
+        ab.save_to(&path).unwrap();
+        let bak = dir.join("address_book.json.bak");
+        assert_eq!(std::fs::read(&bak).unwrap(), b"{ not json !!");
+
+        // A healthy store loads with no notice.
+        let (_, note) = AddressBook::load_or_recover_from(&path);
+        assert_eq!(note, None);
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

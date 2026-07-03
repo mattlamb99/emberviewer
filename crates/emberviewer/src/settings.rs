@@ -170,15 +170,29 @@ impl Settings {
             .map(|d| d.config_dir().join("settings.json"))
     }
 
-    /// Load settings, falling back to defaults on any error.
-    pub fn load() -> Self {
+    /// Load settings, falling back to defaults on any error. A file that
+    /// exists but doesn't parse is moved aside to `.bak` first - settings are
+    /// re-saved shortly after startup, which would otherwise permanently
+    /// overwrite whatever the user had. Returns the settings and an optional
+    /// notice for the UI.
+    pub fn load_or_recover() -> (Self, Option<String>) {
         let Some(path) = Self::store_path() else {
-            return Self::default();
+            return (Self::default(), None);
         };
-        std::fs::read_to_string(path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(_) => return (Self::default(), None), // no file yet: quiet default
+        };
+        match serde_json::from_str(&text) {
+            Ok(s) => (s, None),
+            Err(e) => {
+                let mut note = format!("Settings unreadable ({e}); using defaults");
+                if let Some(bak) = crate::fsutil::quarantine(&path) {
+                    note.push_str(&format!("; the file was kept as {}", bak.display()));
+                }
+                (Self::default(), Some(note))
+            }
+        }
     }
 
     /// Persist settings (best effort; returns an error string on failure).
@@ -188,6 +202,7 @@ impl Settings {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }
         let json = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
-        std::fs::write(path, json).map_err(|e| e.to_string())
+        // Atomic (temp + rename): a crash mid-save must not truncate the store.
+        crate::fsutil::write_atomic(&path, json.as_bytes()).map_err(|e| e.to_string())
     }
 }

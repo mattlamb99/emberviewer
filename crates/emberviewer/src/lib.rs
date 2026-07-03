@@ -12,6 +12,8 @@ mod debug_log;
 #[cfg(not(target_arch = "wasm32"))]
 mod discovery;
 #[cfg(not(target_arch = "wasm32"))]
+mod fsutil;
+#[cfg(not(target_arch = "wasm32"))]
 mod hub;
 mod matrix_view;
 mod model;
