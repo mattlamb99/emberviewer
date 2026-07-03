@@ -1,11 +1,12 @@
 //! Async TCP transport for Ember+: S101 framing over a [`tokio`] socket.
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use ember_proto::glow::{self, Root, Value};
-use ember_proto::s101::{self, FrameDecoder, Incoming};
+use ember_proto::s101::{self, FrameDecoder, Incoming, S101Error};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpStream, ToSocketAddrs};
@@ -72,6 +73,10 @@ pub struct Connection {
     stream: TcpStream,
     decoder: FrameDecoder,
     read_buf: Vec<u8>,
+    /// Frames decoded from a previous read but not yet delivered. One TCP read
+    /// can carry several S101 frames while each call returns at most one item,
+    /// so the surplus queues here and is drained before the next socket read.
+    pending: VecDeque<Result<Incoming, S101Error>>,
 }
 
 impl Connection {
@@ -83,6 +88,7 @@ impl Connection {
             stream,
             decoder: FrameDecoder::new(),
             read_buf: vec![0u8; 16 * 1024],
+            pending: VecDeque::new(),
         })
     }
 
@@ -113,15 +119,9 @@ impl Connection {
     /// requests. Returns `Ok(None)` if the peer closes the connection.
     pub async fn next_root(&mut self) -> Result<Option<Root>, ConnError> {
         loop {
-            // Drain any messages already buffered in the decoder first.
-            // (We re-push an empty slice to surface nothing; real work happens
-            // after a read below.)
-            let n = self.stream.read(&mut self.read_buf).await?;
-            if n == 0 {
-                return Ok(None);
-            }
-            let incoming = self.decoder.push(&self.read_buf[..n]);
-            for item in incoming {
+            // Drain frames left over from a previous read before touching the
+            // socket - returning early for one payload must not lose the rest.
+            while let Some(item) = self.pending.pop_front() {
                 match item {
                     Ok(Incoming::EmberPayload(payload)) => {
                         let root = glow::decode_root(&payload)
@@ -140,6 +140,11 @@ impl Connection {
                     }
                 }
             }
+            let n = self.stream.read(&mut self.read_buf).await?;
+            if n == 0 {
+                return Ok(None);
+            }
+            self.pending.extend(self.decoder.push(&self.read_buf[..n]));
         }
     }
 
@@ -169,6 +174,7 @@ impl Connection {
                 read,
                 decoder: self.decoder,
                 read_buf: self.read_buf,
+                pending: self.pending,
                 traffic: traffic.clone(),
             },
             ProviderWriter { write, traffic },
@@ -235,6 +241,8 @@ pub struct ProviderReader {
     read: OwnedReadHalf,
     decoder: FrameDecoder,
     read_buf: Vec<u8>,
+    /// Frames decoded but not yet delivered - see [`Connection::pending`].
+    pending: VecDeque<Result<Incoming, S101Error>>,
     traffic: Arc<Traffic>,
 }
 
@@ -242,12 +250,9 @@ impl ProviderReader {
     /// Await the next inbound item. Returns `Ok(None)` when the peer closes.
     pub async fn recv(&mut self) -> Result<Option<Inbound>, ConnError> {
         loop {
-            let n = self.read.read(&mut self.read_buf).await?;
-            if n == 0 {
-                return Ok(None);
-            }
-            self.traffic.rx_bytes.fetch_add(n as u64, Ordering::Relaxed);
-            for item in self.decoder.push(&self.read_buf[..n]) {
+            // Drain frames left over from a previous read before touching the
+            // socket - returning early for one payload must not lose the rest.
+            while let Some(item) = self.pending.pop_front() {
                 self.traffic.rx_frames.fetch_add(1, Ordering::Relaxed);
                 match item {
                     Ok(Incoming::EmberPayload(payload)) => {
@@ -283,6 +288,12 @@ impl ProviderReader {
                     Err(e) => tracing::warn!("dropping malformed S101 frame: {e}"),
                 }
             }
+            let n = self.read.read(&mut self.read_buf).await?;
+            if n == 0 {
+                return Ok(None);
+            }
+            self.traffic.rx_bytes.fetch_add(n as u64, Ordering::Relaxed);
+            self.pending.extend(self.decoder.push(&self.read_buf[..n]));
         }
     }
 }

@@ -89,6 +89,10 @@ pub enum S101Error {
     UnknownCommand(u8),
     #[error("malformed Ember header")]
     MalformedHeader,
+    #[error("frame exceeds {MAX_FRAME_BYTES} bytes without EOF")]
+    FrameTooLong,
+    #[error("reassembled payload exceeds {MAX_REASSEMBLY_BYTES} bytes")]
+    ReassemblyTooLong,
 }
 
 /// CRC-16/X-25 over `data` (init 0xFFFF, reflected poly 0x1021, xorout 0xFFFF).
@@ -220,6 +224,17 @@ pub enum Incoming {
     ProviderState(Vec<u8>),
 }
 
+/// Largest raw (escaped) frame the decoder will buffer while waiting for EOF.
+/// Frames on the wire are at most ~2x [`MAX_PACKAGE_PAYLOAD`] plus header/CRC;
+/// 64 KiB leaves generous headroom for fat provider packages while bounding
+/// what a peer that never sends EOF can make us hold.
+pub const MAX_FRAME_BYTES: usize = 64 * 1024;
+
+/// Largest BER payload the decoder will reassemble across First..Last
+/// packages. Real device trees arrive as many documents well under a megabyte
+/// each; 64 MiB bounds a peer that streams non-LAST packages forever.
+pub const MAX_REASSEMBLY_BYTES: usize = 64 * 1024 * 1024;
+
 /// Streaming S101 deframer.
 ///
 /// Feed arbitrary byte chunks via [`FrameDecoder::push`]; it returns any
@@ -261,7 +276,17 @@ impl FrameDecoder {
                         Err(e) => results.push(Err(e)),
                     }
                 }
-                _ if self.in_frame => self.frame.push(b),
+                _ if self.in_frame => {
+                    // Bound the buffer: a peer sending BOF then endless bytes
+                    // with no EOF must not grow memory without limit.
+                    if self.frame.len() >= MAX_FRAME_BYTES {
+                        self.in_frame = false;
+                        self.frame.clear();
+                        results.push(Err(S101Error::FrameTooLong));
+                    } else {
+                        self.frame.push(b);
+                    }
+                }
                 _ => {} // bytes outside any frame are ignored
             }
         }
@@ -316,6 +341,14 @@ impl FrameDecoder {
             self.reassembly.clear();
         }
         if flags & package_flag::EMPTY == 0 {
+            // Bound reassembly: a peer streaming non-LAST packages forever must
+            // not grow memory without limit. Discard the run and resync at the
+            // next FIRST package.
+            if self.reassembly.len() + payload.len() > MAX_REASSEMBLY_BYTES {
+                self.reassembly.clear();
+                self.reassembly.shrink_to_fit();
+                return Err(S101Error::ReassemblyTooLong);
+            }
             self.reassembly.extend_from_slice(payload);
         }
         if flags & package_flag::LAST != 0 {
@@ -330,6 +363,58 @@ impl FrameDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A peer sending BOF then endless bytes with no EOF must hit the frame cap
+    /// (bounded memory), surface an error, and still decode later good frames.
+    #[test]
+    fn endless_frame_is_capped_not_unbounded() {
+        let mut dec = FrameDecoder::new();
+        assert!(dec.push(&[BOF]).is_empty());
+        let chunk = vec![0x55u8; 16 * 1024];
+        let mut errs = 0;
+        for _ in 0..8 {
+            // 128 KiB total, twice MAX_FRAME_BYTES.
+            errs += dec.push(&chunk).iter().filter(|r| r.is_err()).count();
+        }
+        assert!(errs >= 1, "cap never tripped");
+        assert!(dec.frame.len() <= MAX_FRAME_BYTES, "buffer kept growing");
+        // Decoder recovers: a well-formed keep-alive still decodes.
+        let out = dec.push(&encode_keepalive_request());
+        assert_eq!(out.last(), Some(&Ok(Incoming::KeepAliveRequest)));
+    }
+
+    /// A peer streaming FIRST + endless non-LAST Ember packages must hit the
+    /// reassembly cap instead of growing memory without bound.
+    #[test]
+    fn endless_reassembly_is_capped() {
+        let mut dec = FrameDecoder::new();
+        // One FIRST package then middle packages forever (never LAST).
+        let payload = vec![0xAAu8; MAX_PACKAGE_PAYLOAD];
+        let first = frame_ember_package(&payload, package_flag::FIRST);
+        assert!(dec.push(&first).iter().all(|r| r.is_ok()));
+        let middle = frame_ember_package(&payload, 0);
+        let mut tripped = false;
+        // Enough middles to exceed MAX_REASSEMBLY_BYTES.
+        for _ in 0..(MAX_REASSEMBLY_BYTES / MAX_PACKAGE_PAYLOAD + 2) {
+            if dec
+                .push(&middle)
+                .iter()
+                .any(|r| r == &Err(S101Error::ReassemblyTooLong))
+            {
+                tripped = true;
+                break;
+            }
+        }
+        assert!(tripped, "reassembly cap never tripped");
+        assert!(dec.reassembly.len() <= MAX_REASSEMBLY_BYTES);
+        // Decoder resyncs on the next FIRST..LAST payload.
+        let small = frame_ember_package(b"hello", package_flag::SINGLE);
+        let out = dec.push(&small);
+        assert_eq!(
+            out.last(),
+            Some(&Ok(Incoming::EmberPayload(b"hello".to_vec())))
+        );
+    }
 
     #[test]
     fn crc16_check_value() {

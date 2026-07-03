@@ -801,8 +801,10 @@ fn unpack_stream(bytes: &[u8], format: i32, offset: usize) -> Option<Value> {
             &bytes[offset..end]
         }};
     }
-    let i = |le: bool, n: usize, signed: bool| -> i64 {
-        let b = &bytes[offset..offset + n];
+    // Checked slice: a descriptor offset/width beyond the octets (buggy or
+    // hostile provider) must yield None, never panic.
+    let i = |le: bool, n: usize, signed: bool| -> Option<i64> {
+        let b = bytes.get(offset..offset + n)?;
         let mut v: u64 = 0;
         if le {
             for (k, &x) in b.iter().enumerate() {
@@ -816,23 +818,23 @@ fn unpack_stream(bytes: &[u8], format: i32, offset: usize) -> Option<Value> {
         if signed && n < 8 && (v >> (8 * n - 1)) & 1 == 1 {
             v |= !0u64 << (8 * n); // sign-extend
         }
-        v as i64
+        Some(v as i64)
     };
     Some(match format {
         0 => Value::Integer(*rd!(1).first()? as i64), // u8
         8 => Value::Integer(*rd!(1).first()? as i8 as i64), // s8
-        2 => Value::Integer(i(false, 2, false)),
-        3 => Value::Integer(i(true, 2, false)),
-        4 => Value::Integer(i(false, 4, false)),
-        5 => Value::Integer(i(true, 4, false)),
-        6 => Value::Integer(i(false, 8, false)),
-        7 => Value::Integer(i(true, 8, false)),
-        10 => Value::Integer(i(false, 2, true)),
-        11 => Value::Integer(i(true, 2, true)),
-        12 => Value::Integer(i(false, 4, true)),
-        13 => Value::Integer(i(true, 4, true)),
-        14 => Value::Integer(i(false, 8, true)),
-        15 => Value::Integer(i(true, 8, true)),
+        2 => Value::Integer(i(false, 2, false)?),
+        3 => Value::Integer(i(true, 2, false)?),
+        4 => Value::Integer(i(false, 4, false)?),
+        5 => Value::Integer(i(true, 4, false)?),
+        6 => Value::Integer(i(false, 8, false)?),
+        7 => Value::Integer(i(true, 8, false)?),
+        10 => Value::Integer(i(false, 2, true)?),
+        11 => Value::Integer(i(true, 2, true)?),
+        12 => Value::Integer(i(false, 4, true)?),
+        13 => Value::Integer(i(true, 4, true)?),
+        14 => Value::Integer(i(false, 8, true)?),
+        15 => Value::Integer(i(true, 8, true)?),
         20 => Value::Real(Real::from_f64(
             f32::from_be_bytes(rd!(4).try_into().ok()?) as f64
         )),
@@ -974,6 +976,31 @@ pub fn label_fetch_step(state: Option<(f64, u8)>, has_children: bool, now: f64) 
 mod tests {
     use super::*;
     use ember_proto::glow::*;
+
+    /// A stream descriptor whose offset/width overruns the received octets must
+    /// return None (fall back to the raw value), not panic - the descriptor and
+    /// the octets both come straight from the network.
+    #[test]
+    fn unpack_stream_short_octets_is_none_not_panic() {
+        // Every multi-byte format against a buffer shorter than offset+width.
+        for format in [2, 3, 4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 20, 21, 22, 23] {
+            assert_eq!(unpack_stream(&[0x01], format, 0), None, "format {format}");
+            assert_eq!(unpack_stream(&[], format, 0), None, "format {format} empty");
+            assert_eq!(
+                unpack_stream(&[0; 8], format, 7),
+                None,
+                "format {format} offset overrun"
+            );
+        }
+        // Single-byte formats with an out-of-range offset.
+        assert_eq!(unpack_stream(&[], 0, 0), None);
+        assert_eq!(unpack_stream(&[1], 8, 1), None);
+        // Sanity: valid input still decodes (u16 BE at offset 1).
+        assert_eq!(
+            unpack_stream(&[0xff, 0x01, 0x02], 2, 1),
+            Some(Value::Integer(0x0102))
+        );
+    }
 
     fn unhex(s: &str) -> Vec<u8> {
         let s: String = s.chars().filter(|c| !c.is_whitespace()).collect();

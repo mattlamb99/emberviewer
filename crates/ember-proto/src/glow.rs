@@ -1091,10 +1091,23 @@ pub fn decode_roots(bytes: &[u8]) -> Vec<Result<Root, rasn::error::DecodeError>>
     out
 }
 
+/// Deepest indefinite-length nesting `element_end` will walk. Real Glow trees
+/// nest a handful of levels per path element; 128 is far beyond anything a
+/// legitimate provider produces, while bounding the recursion so a hostile
+/// payload of nested indefinite-length TLVs cannot overflow the stack.
+const MAX_BER_DEPTH: u32 = 128;
+
 /// Return the index just past the complete BER element starting at `start`,
 /// handling definite and indefinite (`0x80` + `00 00`) lengths. `None` if the
-/// data is truncated or malformed.
+/// data is truncated, malformed, or nested beyond [`MAX_BER_DEPTH`].
 fn element_end(data: &[u8], start: usize) -> Option<usize> {
+    element_end_at(data, start, 0)
+}
+
+fn element_end_at(data: &[u8], start: usize, depth: u32) -> Option<usize> {
+    if depth > MAX_BER_DEPTH {
+        return None;
+    }
     let mut i = start;
     let first = *data.get(i)?;
     i += 1;
@@ -1113,7 +1126,7 @@ fn element_end(data: &[u8], start: usize) -> Option<usize> {
             if data.get(i) == Some(&0) && data.get(i + 1) == Some(&0) {
                 return Some(i + 2);
             }
-            i = element_end(data, i)?;
+            i = element_end_at(data, i, depth + 1)?;
         }
     } else if len_byte & 0x80 != 0 {
         let n = (len_byte & 0x7F) as usize;
@@ -1131,6 +1144,22 @@ fn element_end(data: &[u8], start: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Deeply nested indefinite-length TLVs must be rejected by the depth
+    /// limit, not overflow the stack. Regression: `element_end` used to recurse
+    /// unboundedly on hostile input.
+    #[test]
+    fn deeply_nested_indefinite_length_does_not_overflow_stack() {
+        // 100k levels of `SEQUENCE, indefinite length` with no terminators:
+        // each level recursed once before the depth cap existed.
+        let mut payload = Vec::with_capacity(200_000);
+        for _ in 0..100_000 {
+            payload.extend_from_slice(&[0x30, 0x80]);
+        }
+        assert_eq!(element_end(&payload, 0), None);
+        // And through the public tolerant decoder: errors, not a crash.
+        assert!(decode_roots(&payload).iter().all(|r| r.is_err()));
+    }
 
     #[test]
     #[allow(clippy::approx_constant)] // exercising REAL round-trips, not π
