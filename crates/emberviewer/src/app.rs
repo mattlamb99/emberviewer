@@ -2595,23 +2595,23 @@ fn render_entry(
         header.body(|ui| {
             // Matrix grid / function form, when this node is one.
             if has_matrix {
-                // The grid is greyed and inert when locked; a click then flashes
-                // the padlock to show why nothing routed. The matrix detail is
+                // The lock gates only the crosspoints (render_matrix flags a
+                // blocked click so the padlock flashes); resizing, scrolling,
+                // and header clicks stay live while locked. The matrix detail is
                 // borrowed from the tree only for the paint; `render_matrix` returns
                 // the (Copy) click/blocked outcome, so the borrow ends before we
                 // touch `&mut session`.
                 let (clicked, blocked) = {
                     let entry = session.tree.get(path).expect("matrix entry present");
                     let m = entry.matrix.as_ref().expect("matrix present");
-                    lockable(ui, opts.armed, |ui| {
-                        crate::matrix_view::render_matrix(
-                            ui,
-                            entry,
-                            m,
-                            opts.matrix_targets_on_top,
-                            commands,
-                        )
-                    })
+                    crate::matrix_view::render_matrix(
+                        ui,
+                        entry,
+                        m,
+                        opts.matrix_targets_on_top,
+                        opts.armed,
+                        commands,
+                    )
                 };
                 if blocked {
                     session.flash_until = ui.input(|i| i.time) + LOCK_FLASH_SECS;

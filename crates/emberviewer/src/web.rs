@@ -608,9 +608,10 @@ fn render_node(ui: &mut egui::Ui, ctx: &mut RenderCtx, path: &[u32]) {
                                 LABEL_FETCH_RETRY_SECS,
                             ));
                     }
-                    let (clicked, blocked) = widgets::lockable(ui, ctx.armed, |ui| {
-                        matrix_view::render_matrix(ui, entry, m, true, ctx.commands)
-                    });
+                    // The lock gates only the crosspoints; resizing, scrolling,
+                    // and header clicks stay live while locked.
+                    let (clicked, blocked) =
+                        matrix_view::render_matrix(ui, entry, m, true, ctx.armed, ctx.commands);
                     if blocked {
                         *ctx.flash = ctx.now + widgets::LOCK_FLASH_SECS;
                     }
