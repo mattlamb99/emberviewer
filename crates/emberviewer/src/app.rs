@@ -2503,7 +2503,7 @@ fn render_entry(
     commands: &mut Vec<NetCommand>,
     visible: &mut Vec<Vec<u32>>,
 ) {
-    let Some(entry) = session.tree.get(path).cloned() else {
+    let Some(entry) = session.tree.get(path) else {
         return;
     };
     let eff_online = online && entry.is_online;
@@ -2514,7 +2514,28 @@ fn render_entry(
         // `header.body`), so the matrix label fetch below can use them.
         let now = ui.input(|i| i.time);
         let ctx = ui.ctx().clone();
-        let mut heading = egui::RichText::new(node_label(&entry, opts));
+        // Snapshot only the cheap fields needed across the `&mut session` borrows
+        // below. The matrix / function detail (whose label & connection maps can be
+        // enormous - a 5001-target matrix) is deliberately NOT cloned; it is
+        // re-borrowed from the tree at each point of use, inside blocks that don't
+        // overlap a `&mut session` borrow.
+        let heading_text = node_label(entry, opts);
+        let identifier = entry.identifier.clone();
+        let has_matrix = entry.matrix.is_some();
+        let has_function = entry.function.is_some();
+        let requested = entry.requested;
+        let matrix_fetch = entry
+            .matrix
+            .as_ref()
+            .map(|m| (m.label_paths.clone(), m.params_location.clone()));
+        // The (small) resolved per-signal parameter node bases, for a header click.
+        let param_axis_paths = entry
+            .matrix
+            .as_ref()
+            .map(|m| (m.param_targets_path.clone(), m.param_sources_path.clone()));
+        // `entry` borrow released here (only Copy/owned snapshots survive).
+
+        let mut heading = egui::RichText::new(heading_text);
         if !eff_online {
             heading = heading.weak().italics();
         }
@@ -2527,7 +2548,7 @@ fn render_entry(
                     let label = ui
                         .add(egui::Label::new(heading).sense(egui::Sense::click()))
                         .on_hover_text(if eff_online { "" } else { "offline" });
-                    label.context_menu(|ui| context_copy(ui, &entry.path, &entry.identifier));
+                    label.context_menu(|ui| context_copy(ui, path, &identifier));
                     name_clicked = label.clicked();
                 });
         if name_clicked {
@@ -2540,21 +2561,21 @@ fn render_entry(
         // params), so kicking it off early - and on every frame the matrix is in
         // view, regardless of expand state - lets the multi-phase fetch finish even
         // on slow devices, instead of stalling if the grid is collapsed mid-fetch.
-        if let Some(m) = &entry.matrix {
-            if session.label_fetch.insert(entry.path.clone()) {
-                commands.push(NetCommand::GetMatrixDirectory(entry.path.clone()));
+        if let Some((label_paths, params_location)) = &matrix_fetch {
+            if session.label_fetch.insert(path.to_vec()) {
+                commands.push(NetCommand::GetMatrixDirectory(path.to_vec()));
             }
             let mut pending = false;
-            for base in m.label_paths.clone() {
+            for base in label_paths {
                 // basePath may be absolute or relative-to-parent depending on the
                 // provider; fetch each interpretation that points at a real node.
-                let cands = crate::model::fetchable_label_bases(&session.tree, &entry.path, &base);
+                let cands = crate::model::fetchable_label_bases(&session.tree, path, base);
                 for cand in cands {
                     pending |= fetch_label_subtree(session, &cand, now, commands);
                 }
             }
-            if let Some(ploc) = m.params_location.clone() {
-                pending |= fetch_label_subtree(session, &ploc, now, commands);
+            if let Some(ploc) = params_location {
+                pending |= fetch_label_subtree(session, ploc, now, commands);
             }
             // Keep ticking while a label fetch is still outstanding, so the retry
             // fires even if nothing else (e.g. a live meter) is repainting.
@@ -2566,27 +2587,39 @@ fn render_entry(
         }
         header.body(|ui| {
             // Matrix grid / function form, when this node is one.
-            if let Some(m) = &entry.matrix {
+            if has_matrix {
                 // The grid is greyed and inert when locked; a click then flashes
-                // the padlock to show why nothing routed.
-                let (clicked, blocked) = lockable(ui, opts.armed, |ui| {
-                    crate::matrix_view::render_matrix(
-                        ui,
-                        &entry,
-                        m,
-                        opts.matrix_targets_on_top,
-                        commands,
-                    )
-                });
+                // the padlock to show why nothing routed. The matrix detail is
+                // borrowed from the tree only for the paint; `render_matrix` returns
+                // the (Copy) click/blocked outcome, so the borrow ends before we
+                // touch `&mut session`.
+                let (clicked, blocked) = {
+                    let entry = session.tree.get(path).expect("matrix entry present");
+                    let m = entry.matrix.as_ref().expect("matrix present");
+                    lockable(ui, opts.armed, |ui| {
+                        crate::matrix_view::render_matrix(
+                            ui,
+                            entry,
+                            m,
+                            opts.matrix_targets_on_top,
+                            commands,
+                        )
+                    })
+                };
                 if blocked {
                     session.flash_until = ui.input(|i| i.time) + LOCK_FLASH_SECS;
                 }
                 if let Some((is_target, sig)) = clicked {
                     // Open the clicked signal's parameter node (gain/type/…).
-                    let base = if is_target {
-                        m.param_targets_path.clone()
-                    } else {
-                        m.param_sources_path.clone()
+                    let base = match &param_axis_paths {
+                        Some((t, s)) => {
+                            if is_target {
+                                t.clone()
+                            } else {
+                                s.clone()
+                            }
+                        }
+                        None => None,
                     };
                     if let Some(mut node) = base {
                         node.push(sig);
@@ -2597,47 +2630,58 @@ fn render_entry(
                         session.signal_params = Some((node, format!("{kind} {sig}")));
                     }
                 }
-            } else if let Some(f) = &entry.function {
-                let (_, blocked) = lockable(ui, opts.armed, |ui| {
-                    render_function(
-                        ui,
-                        &entry,
-                        f,
-                        &mut session.func_inputs,
-                        &mut session.invocations,
-                        &mut session.next_invocation_id,
-                        &session.tree.invocation_results,
-                        commands,
-                    );
-                });
+            } else if has_function {
+                let blocked = {
+                    let entry = session.tree.get(path).expect("function entry present");
+                    let f = entry.function.as_ref().expect("function present");
+                    lockable(ui, opts.armed, |ui| {
+                        render_function(
+                            ui,
+                            entry,
+                            f,
+                            &mut session.func_inputs,
+                            &mut session.invocations,
+                            &mut session.next_invocation_id,
+                            &session.tree.invocation_results,
+                            commands,
+                        );
+                    })
+                    .1
+                };
                 if blocked {
                     session.flash_until = ui.input(|i| i.time) + LOCK_FLASH_SECS;
                 }
             }
-            let children = sorted_paths(&session.tree, &entry.children, opts.order_by);
+            let children = {
+                let entry = session.tree.get(path).expect("node entry present");
+                sorted_paths(&session.tree, &entry.children, opts.order_by)
+            };
             for child in &children {
                 render_entry(ui, session, child, opts, eff_online, row, commands, visible);
             }
-            if children.is_empty() && entry.matrix.is_none() && entry.function.is_none() {
+            if children.is_empty() && !has_matrix && !has_function {
                 ui.weak("…");
             }
         });
         // Lazily request children whenever a node is open but not yet fetched.
         // (`requested` is reset on reconnect, so this also drives re-discovery.)
         session.open.insert(path.to_vec(), next_open);
-        if next_open && !entry.requested {
+        if next_open && !requested {
             if let Some(e) = session.tree.entries.get_mut(path) {
                 e.requested = true;
             }
-            if entry.matrix.is_some() {
+            if has_matrix {
                 commands.push(NetCommand::GetMatrixDirectory(path.to_vec()));
             } else {
                 commands.push(NetCommand::GetDirectory(path.to_vec()));
             }
         }
     } else {
-        // A leaf parameter is on screen → eligible for a live subscription.
+        // A leaf parameter is on screen → eligible for a live subscription. A leaf
+        // has no matrix maps, so this clone is cheap (it decouples the entry from
+        // `session` so `render_parameter` can take `&mut session` alongside it).
         visible.push(path.to_vec());
+        let entry = entry.clone();
         render_parameter(ui, session, &entry, opts, eff_online, row, commands);
     }
 }
