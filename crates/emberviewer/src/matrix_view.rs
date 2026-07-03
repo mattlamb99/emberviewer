@@ -140,7 +140,6 @@ pub fn render_matrix(
                     // the crosshair and the sticky overlay agree pixel-for-pixel.
                     let origin = ui.cursor().min;
                     let view = ui.clip_rect();
-                    ui.spacing_mut().item_spacing = egui::vec2(1.0, 1.0);
 
                     // Screen edges of the sticky header row / label column.
                     let label_x = view.left() + label_w;
@@ -171,77 +170,96 @@ pub fn render_matrix(
                             .then_some(idx)
                     });
 
-                    // Reserve the header row (corner + column headers). The real,
-                    // interactive header is painted by the sticky overlay below;
-                    // here we only claim the space so the grid scrolls under it.
-                    ui.horizontal(|ui| {
-                        ui.allocate_exact_size(egui::vec2(label_w, header_h), egui::Sense::hover());
-                        for _ in col_signals {
-                            ui.allocate_exact_size(
-                                egui::vec2(CELL, header_h),
-                                egui::Sense::hover(),
+                    // Virtualized grid: allocate one rect spanning the whole grid so
+                    // the scrollbars reflect the full extent, then paint and hit-test
+                    // only the cells inside the viewport. On a 5001x5001 matrix this
+                    // is a few hundred cells per frame instead of 25 million.
+                    let n_cols = col_signals.len();
+                    let n_rows = row_signals.len();
+                    let col0 = origin.x + label_w + 1.0; // left of column 0
+                    let row0 = origin.y + header_h + 1.0; // top of row 0
+                    let step = CELL + 1.0;
+                    let total_w = label_w + n_cols as f32 * step;
+                    let total_h = header_h + n_rows as f32 * step;
+                    let (_, grid_resp) =
+                        ui.allocate_exact_size(egui::vec2(total_w, total_h), egui::Sense::click());
+
+                    let (first_col, last_col) =
+                        visible_range(col0, step, n_cols, view.left(), view.right());
+                    let (first_row, last_row) =
+                        visible_range(row0, step, n_rows, view.top(), view.bottom());
+
+                    let painter = ui.painter().clone();
+                    // Indexing (not iterators) is deliberate: we walk only the
+                    // visible sub-range and need the absolute index for geometry.
+                    #[allow(clippy::needless_range_loop)]
+                    for ri in first_row..last_row {
+                        let r = row_signals[ri];
+                        let top = row0 + ri as f32 * step;
+                        let row_bg = if ri % 2 == 0 { light_row } else { dark_row };
+                        let in_row = hovered_row == Some(ri);
+                        for ci in first_col..last_col {
+                            let c = col_signals[ci];
+                            let left = col0 + ci as f32 * step;
+                            let (t, s) = if targets_on_top { (c, r) } else { (r, c) };
+                            let on = m.connections.get(&t).is_some_and(|set| set.contains(&s));
+                            let in_col = hovered_col == Some(ci);
+                            let fill = if on {
+                                crosspoint
+                            } else if in_row && in_col {
+                                cross_strong
+                            } else if in_row || in_col {
+                                cross
+                            } else {
+                                row_bg
+                            };
+                            painter.rect_filled(
+                                egui::Rect::from_min_size(
+                                    egui::pos2(left, top),
+                                    egui::vec2(CELL, CELL),
+                                ),
+                                2.0,
+                                fill,
                             );
                         }
-                    });
-                    for (ri, &r) in row_signals.iter().enumerate() {
-                        ui.horizontal(|ui| {
-                            // Reserve the sticky row-label cell (painted by overlay).
-                            ui.allocate_exact_size(egui::vec2(label_w, CELL), egui::Sense::hover());
-                            let row_bg = if ri % 2 == 0 { light_row } else { dark_row };
-                            let in_row = hovered_row == Some(ri);
-                            for (ci, &c) in col_signals.iter().enumerate() {
-                                let (t, s) = if targets_on_top { (c, r) } else { (r, c) };
-                                let on = m.connections.get(&t).is_some_and(|set| set.contains(&s));
-                                let (rect, resp) = ui.allocate_exact_size(
-                                    egui::vec2(CELL, CELL),
-                                    egui::Sense::click(),
-                                );
-                                let in_col = hovered_col == Some(ci);
-                                let fill = if on {
-                                    crosspoint
-                                } else if in_row && in_col {
-                                    cross_strong
-                                } else if in_row || in_col {
-                                    cross
-                                } else {
-                                    row_bg
-                                };
-                                ui.painter().rect_filled(rect, 2.0, fill);
-                                // Cells scrolled under the sticky header/label are
-                                // hidden by the overlay - don't let them react.
-                                if rect.center().x < label_x || rect.center().y < header_y {
-                                    continue;
-                                }
-                                let tname = m
-                                    .target_labels
-                                    .get(&t)
-                                    .map(|n| format!(" ({n})"))
-                                    .unwrap_or_default();
-                                let sname = m
-                                    .source_labels
-                                    .get(&s)
-                                    .map(|n| format!(" ({n})"))
-                                    .unwrap_or_default();
-                                let resp = resp.on_hover_text(format!(
-                                    "target {t}{tname} <- source {s}{sname}"
-                                ));
-                                if resp.clicked() {
-                                    let operation = if on {
-                                        glow::connection_operation::DISCONNECT
-                                    } else if m.mtype == glow::matrix_type::N_TO_N {
-                                        glow::connection_operation::CONNECT
-                                    } else {
-                                        glow::connection_operation::ABSOLUTE
-                                    };
-                                    commands.push(NetCommand::MatrixConnect {
-                                        path: path.clone(),
-                                        target: t,
-                                        sources: vec![s],
-                                        operation,
-                                    });
-                                }
-                            }
-                        });
+                    }
+
+                    // One hit-test for the hovered cell. `hovered_col`/`hovered_row`
+                    // already return None over the sticky header/label strips (the
+                    // pointer is gated on label_x/header_y), so cells scrolled under
+                    // the strips don't react - the suppression now tracks the exact
+                    // strip edges rather than a cell-center test.
+                    if let (Some(ci), Some(ri)) = (hovered_col, hovered_row) {
+                        let (c, r) = (col_signals[ci], row_signals[ri]);
+                        let (t, s) = if targets_on_top { (c, r) } else { (r, c) };
+                        let on = m.connections.get(&t).is_some_and(|set| set.contains(&s));
+                        let tname = m
+                            .target_labels
+                            .get(&t)
+                            .map(|n| format!(" ({n})"))
+                            .unwrap_or_default();
+                        let sname = m
+                            .source_labels
+                            .get(&s)
+                            .map(|n| format!(" ({n})"))
+                            .unwrap_or_default();
+                        let grid_resp = grid_resp
+                            .on_hover_text(format!("target {t}{tname} <- source {s}{sname}"));
+                        if grid_resp.clicked() {
+                            let operation = if on {
+                                glow::connection_operation::DISCONNECT
+                            } else if m.mtype == glow::matrix_type::N_TO_N {
+                                glow::connection_operation::CONNECT
+                            } else {
+                                glow::connection_operation::ABSOLUTE
+                            };
+                            commands.push(NetCommand::MatrixConnect {
+                                path: path.clone(),
+                                target: t,
+                                sources: vec![s],
+                                operation,
+                            });
+                        }
                     }
                     (origin, view, hovered_col, hovered_row)
                 })
@@ -434,4 +452,83 @@ pub fn render_matrix(
             }
         });
     header_clicked
+}
+
+/// Half-open index range `[first, last)` of a uniform axis that intersects the
+/// visible window, for grid virtualization. `n` items sit `step` apart with the
+/// first item's leading edge at `content_start` (screen coords); `view_min` /
+/// `view_max` are the viewport edges. Result is clamped to `0..=n`. `first` uses
+/// a floor so the item straddling `view_min` is included; `last` rounds up so the
+/// item straddling `view_max` is included.
+fn visible_range(
+    content_start: f32,
+    step: f32,
+    n: usize,
+    view_min: f32,
+    view_max: f32,
+) -> (usize, usize) {
+    if n == 0 || step <= 0.0 {
+        return (0, 0);
+    }
+    let rel_max = view_max - content_start;
+    if rel_max < 0.0 {
+        return (0, 0);
+    }
+    let rel_min = view_min - content_start;
+    let first = if rel_min <= 0.0 {
+        0
+    } else {
+        ((rel_min / step) as usize).min(n)
+    };
+    let last = ((rel_max / step) as usize + 1).min(n);
+    (first, last.max(first))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::visible_range;
+
+    // A uniform axis: 100 items, 19px apart (CELL 18 + 1 spacing), first at x=50.
+    const START: f32 = 50.0;
+    const STEP: f32 = 19.0;
+    const N: usize = 100;
+
+    #[test]
+    fn full_axis_visible_when_window_covers_all() {
+        assert_eq!(visible_range(START, STEP, N, 0.0, 10_000.0), (0, N));
+    }
+
+    #[test]
+    fn window_before_content_is_empty() {
+        assert_eq!(visible_range(START, STEP, N, 0.0, 40.0), (0, 0));
+    }
+
+    #[test]
+    fn window_past_content_clamps_to_n() {
+        let (first, last) = visible_range(START, STEP, N, 9_000.0, 10_000.0);
+        assert_eq!(first, N);
+        assert_eq!(last, N);
+    }
+
+    #[test]
+    fn includes_items_straddling_both_edges() {
+        // Window [100, 200] over items starting at 50, step 19.
+        // item i occupies [50 + 19i, 50 + 19i + 18].
+        // left edge <= 100 -> i <= 2 (item 2 left = 88); floor((100-50)/19)=2.
+        // right edge: floor((200-50)/19)=7 -> last = 8 (item 7 left = 183 <= 200).
+        let (first, last) = visible_range(START, STEP, N, 100.0, 200.0);
+        assert_eq!(first, 2);
+        assert_eq!(last, 8);
+        // Every painted item must actually overlap the window.
+        for i in first..last {
+            let left = START + i as f32 * STEP;
+            let right = left + 18.0;
+            assert!(right >= 100.0 && left <= 200.0, "item {i} out of window");
+        }
+    }
+
+    #[test]
+    fn zero_items_is_empty() {
+        assert_eq!(visible_range(START, STEP, 0, 0.0, 1000.0), (0, 0));
+    }
 }
