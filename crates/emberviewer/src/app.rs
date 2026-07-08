@@ -216,6 +216,10 @@ pub struct App {
     update: crate::update::UpdateStatus,
     /// Receiver for an in-flight update check (drained each frame).
     update_rx: Option<std::sync::mpsc::Receiver<crate::update::UpdateStatus>>,
+    /// Address book node awaiting a confirmed "Remove" - a mis-click on this
+    /// destroys a hand-built provider list with no undo, so it's gated behind
+    /// a confirmation dialog rather than acting immediately from the menu.
+    confirm_remove: Option<Id>,
 }
 
 /// The project's warm-orange brand accent.
@@ -348,6 +352,7 @@ impl App {
             server: None,
             update: crate::update::UpdateStatus::Idle,
             update_rx: None,
+            confirm_remove: None,
         };
         // Surface store-recovery notices where the user will see them.
         for note in [book_note, settings_note].into_iter().flatten() {
@@ -1026,6 +1031,7 @@ impl eframe::App for App {
         self.sidebar(ui, &ctx);
         self.add_dialog(&ctx);
         self.folder_dialog(&ctx);
+        self.confirm_remove_dialog(&ctx);
         self.import_dialog(&ctx);
         self.options_window(&ctx);
         self.about_window(&ctx);
@@ -1199,7 +1205,7 @@ impl App {
             Some(SidebarAction::Open(id)) => self.open_provider(id, ctx),
             Some(SidebarAction::Disconnect(id)) => self.disconnect(id),
             Some(SidebarAction::EditProvider(id)) => self.open_edit_dialog(id),
-            Some(SidebarAction::Remove(id)) => self.remove_node(id),
+            Some(SidebarAction::Remove(id)) => self.confirm_remove = Some(id),
             Some(SidebarAction::AddFolder(parent)) => {
                 self.folder_dialog = FolderDialog {
                     open: true,
@@ -1377,6 +1383,60 @@ impl App {
             if let Err(e) = self.book.save() {
                 self.status_line = format!("could not save address book: {e}");
             }
+        }
+    }
+
+    /// "Remove" confirmation prompt. A mis-click here would otherwise destroy
+    /// a hand-built provider list in one action with no undo.
+    fn confirm_remove_dialog(&mut self, ctx: &egui::Context) {
+        let Some(id) = self.confirm_remove else {
+            return;
+        };
+        let Some(node) = self.book.find(id) else {
+            self.confirm_remove = None;
+            return;
+        };
+        let (noun, warning) = if node.is_folder() {
+            (
+                "folder",
+                "This also removes everything inside it, including any providers.",
+            )
+        } else {
+            ("provider", "")
+        };
+        let name = node.name().to_string();
+        let mut open = true;
+        let mut confirmed = false;
+        egui::Window::new(format!("Remove {noun}?"))
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label(format!("Remove {noun} \"{name}\"?"));
+                if !warning.is_empty() {
+                    ui.label(egui::RichText::new(warning).weak());
+                }
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui
+                        .button(
+                            egui::RichText::new("Remove")
+                                .color(egui::Color32::from_rgb(210, 70, 60)),
+                        )
+                        .clicked()
+                    {
+                        confirmed = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.confirm_remove = None;
+                    }
+                });
+            });
+        if confirmed {
+            self.remove_node(id);
+            self.confirm_remove = None;
+        } else if !open {
+            self.confirm_remove = None;
         }
     }
 
