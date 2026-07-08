@@ -72,6 +72,9 @@ pub struct WebApp {
     flash_until: f64,
     /// egui time of the last reconnect attempt (for throttling).
     last_reconnect: f64,
+    /// egui time a slider last sent a `SetValue` while being dragged, keyed by
+    /// path - throttles the flood of sets a fast drag would otherwise produce.
+    slider_last_sent: HashMap<Vec<u32>, f64>,
 }
 
 impl WebApp {
@@ -109,6 +112,7 @@ impl WebApp {
             locked: true,
             flash_until: 0.0,
             last_reconnect: 0.0,
+            slider_last_sent: HashMap::new(),
         }
     }
 
@@ -371,6 +375,7 @@ impl eframe::App for WebApp {
                         selected: &mut self.selected,
                         armed: !self.locked,
                         flash: &mut self.flash_until,
+                        slider_last_sent: &mut self.slider_last_sent,
                     };
                     for root in &roots {
                         render_node(ui, &mut ctx, root);
@@ -477,6 +482,8 @@ struct RenderCtx<'a> {
     /// Set to `now + LOCK_FLASH_SECS` when a locked control is tapped, to flash
     /// the padlock and explain why nothing happened.
     flash: &'a mut f64,
+    /// egui time a slider last sent while being dragged, keyed by path.
+    slider_last_sent: &'a mut HashMap<Vec<u32>, f64>,
 }
 
 impl WebApp {
@@ -522,6 +529,8 @@ impl WebApp {
                                         &mut self.string_edit,
                                         pending,
                                         &mut commands,
+                                        now,
+                                        &mut self.slider_last_sent,
                                     );
                                 });
                                 flashed |= blocked;
@@ -739,6 +748,8 @@ fn render_node(ui: &mut egui::Ui, ctx: &mut RenderCtx, path: &[u32]) {
                         ctx.string_edit,
                         pending,
                         ctx.commands,
+                        ctx.now,
+                        ctx.slider_last_sent,
                     );
                 });
                 if blocked {
@@ -762,6 +773,7 @@ fn render_node(ui: &mut egui::Ui, ctx: &mut RenderCtx, path: &[u32]) {
 }
 
 /// A compact value editor / display for the parameter at `path`.
+#[allow(clippy::too_many_arguments)]
 fn param_editor(
     ui: &mut egui::Ui,
     tree: &TreeModel,
@@ -770,6 +782,8 @@ fn param_editor(
     string_edit: &mut Option<widgets::StringEdit>,
     pending: bool,
     commands: &mut Vec<NetCommand>,
+    now: f64,
+    slider_last_sent: &mut HashMap<Vec<u32>, f64>,
 ) {
     let Some(entry) = tree.get(path) else {
         return;
@@ -841,7 +855,15 @@ fn param_editor(
                         egui::Slider::new(&mut v, *lo..=*hi)
                             .custom_formatter(move |n, _| format!("{}{}", n / factor, suffix)),
                     );
-                    if resp.changed() {
+                    if resp.changed()
+                        && widgets::slider_should_send(
+                            slider_last_sent,
+                            path,
+                            now,
+                            resp.dragged(),
+                            resp.drag_stopped(),
+                        )
+                    {
                         set(commands, Value::Integer(v.clamp(*lo, *hi)));
                     }
                 } else {
@@ -880,7 +902,15 @@ fn param_editor(
                         egui::Slider::new(&mut v, lo..=hi)
                             .custom_formatter(move |n, _| format!("{n:.3}{suffix}")),
                     );
-                    if resp.changed() {
+                    if resp.changed()
+                        && widgets::slider_should_send(
+                            slider_last_sent,
+                            path,
+                            now,
+                            resp.dragged(),
+                            resp.drag_stopped(),
+                        )
+                    {
                         set(commands, Value::Real(v.clamp(lo, hi).into()));
                     }
                 } else {

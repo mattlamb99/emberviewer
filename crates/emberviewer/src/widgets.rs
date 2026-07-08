@@ -36,6 +36,39 @@ pub fn lockable<R>(
     (inner.inner, blocked)
 }
 
+/// How often a dragged slider may send a `SetValue`. A raw per-frame send can
+/// flood a device with dozens of sets per second on a fast drag; broadcast
+/// devices often rate-limit or misbehave under that kind of set-storm.
+pub const SLIDER_THROTTLE_SECS: f64 = 0.1;
+
+/// Whether a slider's changed value should be sent now. Discrete changes
+/// (keyboard, click-to-position) always send immediately. A drag throttles to
+/// [`SLIDER_THROTTLE_SECS`], except the exact value on drag-release, which
+/// always sends uncapped so the final position is never left stale.
+pub fn slider_should_send(
+    last_sent: &mut HashMap<Vec<u32>, f64>,
+    path: &[u32],
+    now: f64,
+    dragged: bool,
+    drag_stopped: bool,
+) -> bool {
+    if drag_stopped {
+        last_sent.remove(path);
+        return true;
+    }
+    if !dragged {
+        return true;
+    }
+    let due = match last_sent.get(path) {
+        Some(&last) => now - last >= SLIDER_THROTTLE_SECS,
+        None => true,
+    };
+    if due {
+        last_sent.insert(path.to_vec(), now);
+    }
+    due
+}
+
 /// A padlock toggle button: 🔒 Locked / 🔓 Armed, flips `locked` on click, and
 /// flashes a red fill while `now < flash_until`. Requests repaints while flashing.
 pub fn lock_toggle(ui: &mut egui::Ui, locked: &mut bool, now: f64, flash_until: f64) {

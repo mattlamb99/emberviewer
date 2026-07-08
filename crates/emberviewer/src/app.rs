@@ -19,8 +19,8 @@ use crate::server::{self, ServerHandle};
 use crate::settings::{OrderBy, Settings, StartupMode};
 use crate::widgets::{
     clean_multiline, display_value, draw_indicator, draw_vmeter, format_suffix, is_meterable,
-    lock_toggle, lockable, meter_range, meter_readout, render_function, string_edit_window,
-    value_f64, StringEdit, LOCK_FLASH_SECS,
+    lock_toggle, lockable, meter_range, meter_readout, render_function, slider_should_send,
+    string_edit_window, value_f64, StringEdit, LOCK_FLASH_SECS,
 };
 
 /// State for one open provider connection.
@@ -77,6 +77,9 @@ struct Session {
     traffic_t: f64,
     /// Smoothed TX/RX rates toward the device, recomputed ~once a second.
     rate: TrafficRate,
+    /// egui time a slider last sent a `SetValue` while being dragged, keyed by
+    /// path - throttles the flood of sets a fast drag would otherwise produce.
+    slider_last_sent: HashMap<Vec<u32>, f64>,
 }
 
 /// TX/RX rates toward a device: bytes and S101 frames per second, each way.
@@ -494,6 +497,7 @@ impl App {
                 traffic_prev: ember_net::TrafficSnapshot::default(),
                 traffic_t: 0.0,
                 rate: TrafficRate::default(),
+                slider_last_sent: HashMap::new(),
             },
         );
         self.active = Some(id);
@@ -2979,7 +2983,16 @@ fn editor(
                         .custom_formatter(move |n, _| format!("{}{}", n / factor, suffix)),
                 );
                 if resp.changed() {
-                    commands.push(NetCommand::SetValue(path, Value::Integer(v)));
+                    let now = ui.input(|i| i.time);
+                    if slider_should_send(
+                        &mut session.slider_last_sent,
+                        &path,
+                        now,
+                        resp.dragged(),
+                        resp.drag_stopped(),
+                    ) {
+                        commands.push(NetCommand::SetValue(path, Value::Integer(v)));
+                    }
                 }
             } else {
                 text_commit_editor(ui, session, entry, commands, |s| {
@@ -2997,7 +3010,16 @@ fn editor(
                         .custom_formatter(move |n, _| format!("{n:.3}{suffix}")),
                 );
                 if resp.changed() {
-                    commands.push(NetCommand::SetValue(path, Value::Real(v.into())));
+                    let now = ui.input(|i| i.time);
+                    if slider_should_send(
+                        &mut session.slider_last_sent,
+                        &path,
+                        now,
+                        resp.dragged(),
+                        resp.drag_stopped(),
+                    ) {
+                        commands.push(NetCommand::SetValue(path, Value::Real(v.into())));
+                    }
                 }
             } else {
                 text_commit_editor(ui, session, entry, commands, |s| {
