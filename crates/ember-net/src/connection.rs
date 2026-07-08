@@ -194,6 +194,10 @@ pub enum Inbound {
     Documents { roots: Vec<Root>, raw: Vec<u8> },
     /// The provider asked us to keep the connection alive; reply via the writer.
     KeepAliveRequest,
+    /// The provider answered our keep-alive request - proof the link is alive,
+    /// for a caller that wants to detect a vanished peer faster than TCP's own
+    /// (multi-minute) retransmit timeout.
+    KeepAliveResponse,
 }
 
 /// Whether full hex dumping of every Ember+ frame (sent and received) is on.
@@ -284,7 +288,10 @@ impl ProviderReader {
                     Ok(Incoming::KeepAliveRequest) => {
                         return Ok(Some(Inbound::KeepAliveRequest));
                     }
-                    Ok(Incoming::KeepAliveResponse) | Ok(Incoming::ProviderState(_)) => {}
+                    Ok(Incoming::KeepAliveResponse) => {
+                        return Ok(Some(Inbound::KeepAliveResponse));
+                    }
+                    Ok(Incoming::ProviderState(_)) => {}
                     Err(e) => tracing::warn!("dropping malformed S101 frame: {e}"),
                 }
             }

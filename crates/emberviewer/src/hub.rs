@@ -28,6 +28,10 @@ type SubMap = HashMap<Vec<u32>, HashSet<SubscriberId>>;
 /// doesn't drop documents.
 const EVENT_CAPACITY: usize = 8192;
 const MAX_BACKOFF_SECS: u64 = 30;
+/// How long a connection can go without any inbound traffic (while keepalives
+/// are enabled, sent every 2s) before it's declared dead. 5x the keepalive
+/// interval tolerates a slow/busy device without false-triggering.
+const DEAD_PEER_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A message from a subscriber to the connection task.
 enum HubMsg {
@@ -421,10 +425,23 @@ async fn run_session(
     let mut keepalive_timer = tokio::time::interval(Duration::from_secs(2));
     keepalive_timer.tick().await; // skip the immediate first tick
 
+    // Dead-peer deadline: while we're sending keepalives, any inbound traffic
+    // (a document, a keepalive request, or a keepalive response) resets it.
+    // If nothing arrives for DEAD_PEER_TIMEOUT despite requesting a response
+    // every 2s, the peer is gone - without this, a device that vanishes
+    // without an RST (power loss, cable pull) sits "connected" until the OS's
+    // own TCP retransmit timeout, which can take minutes.
+    let mut dead_peer_deadline = Box::pin(tokio::time::sleep(DEAD_PEER_TIMEOUT));
+
     loop {
         tokio::select! {
             biased;
             _ = &mut *shutdown_rx => return SessionEnd::Shutdown,
+            () = &mut dead_peer_deadline, if keepalive => {
+                return SessionEnd::Dropped(
+                    "no response to keep-alive - provider appears to be gone".into(),
+                );
+            }
             _ = keepalive_timer.tick(), if keepalive => {
                 if let Err(e) = writer.keepalive_request().await {
                     return SessionEnd::Dropped(e.to_string());
@@ -449,13 +466,18 @@ async fn run_session(
             }
             inbound = reader.recv() => match inbound {
                 Ok(Some(Inbound::Documents { roots, raw })) => {
+                    dead_peer_deadline.as_mut().reset(tokio::time::Instant::now() + DEAD_PEER_TIMEOUT);
                     emit(NetEvent::Document {
                         roots: Arc::new(roots),
                         raw: Arc::new(raw),
                     });
                 }
                 Ok(Some(Inbound::KeepAliveRequest)) => {
+                    dead_peer_deadline.as_mut().reset(tokio::time::Instant::now() + DEAD_PEER_TIMEOUT);
                     let _ = writer.keepalive_response().await;
+                }
+                Ok(Some(Inbound::KeepAliveResponse)) => {
+                    dead_peer_deadline.as_mut().reset(tokio::time::Instant::now() + DEAD_PEER_TIMEOUT);
                 }
                 Ok(None) => return SessionEnd::Dropped("connection closed by provider".into()),
                 Err(e) => return SessionEnd::Dropped(e.to_string()),
@@ -679,6 +701,53 @@ mod tests {
                 .expect("no status replayed to the late subscriber")
                 .expect("hub closed");
             assert!(matches!(*replay, NetEvent::Connected), "got {replay:?}");
+        });
+    }
+
+    /// Regression: a provider that accepts the connection but then never
+    /// answers anything (no directory response, no keepalive replies - e.g.
+    /// power loss without a TCP RST) used to leave the session reporting
+    /// "connected" until the OS's own TCP retransmit timeout, which can take
+    /// minutes. With keepalive on, the dead-peer deadline must notice well
+    /// before that and start reconnecting.
+    #[test]
+    fn silent_peer_is_declared_dead_and_triggers_reconnect() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let reg = HubRegistry::new(rt.handle().clone(), egui::Context::default());
+        rt.block_on(async {
+            // Fake provider: accepts the connection and then reads-and-discards
+            // forever, never writing a single byte back (not even a keepalive
+            // response).
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap().to_string();
+            tokio::spawn(async move {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut sink = [0u8; 1024];
+                loop {
+                    use tokio::io::AsyncReadExt;
+                    if sock.read(&mut sink).await.unwrap_or(0) == 0 {
+                        return;
+                    }
+                }
+            });
+
+            let mut lease = reg.open(11, addr, true); // keepalive: true
+            let fut = async {
+                loop {
+                    match lease.recv().await {
+                        Some(ev) if matches!(&*ev, NetEvent::Reconnecting { .. }) => return,
+                        Some(_) => {}
+                        None => panic!("hub closed before declaring the peer dead"),
+                    }
+                }
+            };
+            // DEAD_PEER_TIMEOUT is 10s; this generous bound just proves it
+            // fires well short of a multi-minute TCP-level timeout.
+            tokio::time::timeout(Duration::from_secs(20), fut)
+                .await
+                .expect("dead peer was never detected");
         });
     }
 

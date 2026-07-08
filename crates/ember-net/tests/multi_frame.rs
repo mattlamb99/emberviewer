@@ -108,6 +108,7 @@ async fn keepalive_between_frames_does_not_lose_documents() {
         {
             ember_net::Inbound::Documents { .. } => docs += 1,
             ember_net::Inbound::KeepAliveRequest => keepalives += 1,
+            ember_net::Inbound::KeepAliveResponse => {}
         }
     }
     assert_eq!((docs, keepalives), (2, 1));
