@@ -1180,7 +1180,7 @@ impl App {
                         let frame = egui::Frame::default()
                             .inner_margin(8.0)
                             .corner_radius(6.0)
-                            .stroke(egui::Stroke::new(1.0, ACCENT))
+                            .stroke(egui::Stroke::new(1.0_f32, ACCENT))
                             .fill(ACCENT.gamma_multiply(0.10));
                         let (_, payload) = ui.dnd_drop_zone::<DragPayload, ()>(frame, |ui| {
                             ui.set_width(ui.available_width());
@@ -2355,7 +2355,7 @@ impl App {
                         ui.visuals().weak_text_color().gamma_multiply(0.55)
                     };
                     let xc = x_rect.center();
-                    let xs = egui::Stroke::new(1.5, x_col);
+                    let xs = egui::Stroke::new(1.5_f32, x_col);
                     ui.painter()
                         .line_segment([xc + egui::vec2(-3.5, -3.5), xc + egui::vec2(3.5, 3.5)], xs);
                     ui.painter()
@@ -2389,7 +2389,7 @@ impl App {
                                 egui::pos2(g_rect.right() - off, g_rect.bottom() - 1.5),
                                 egui::pos2(g_rect.right() - 1.5, g_rect.bottom() - off),
                             ],
-                            egui::Stroke::new(1.0, g_col),
+                            egui::Stroke::new(1.0_f32, g_col),
                         );
                     }
                 });

@@ -170,7 +170,7 @@ pub fn draw_vmeter(
     painter.rect_stroke(
         rect,
         3.0,
-        egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
+        egui::Stroke::new(1.0_f32, ui.visuals().widgets.noninteractive.bg_stroke.color),
         egui::StrokeKind::Inside,
     );
     if let Some(v) = value {
@@ -234,7 +234,7 @@ pub fn draw_indicator(
     painter.circle_stroke(
         center,
         radius,
-        egui::Stroke::new(1.0, egui::Color32::from_black_alpha(90)),
+        egui::Stroke::new(1.0_f32, egui::Color32::from_black_alpha(90)),
     );
     resp
 }
