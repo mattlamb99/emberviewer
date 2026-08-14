@@ -166,6 +166,7 @@ struct ImportPending {
 struct RenderOpts {
     pulse_ms: u64,
     show_descriptions: bool,
+    show_path_numbers: bool,
     order_by: OrderBy,
     matrix_targets_on_top: bool,
     /// Whether value/route/invoke controls are interactive this frame. False when
@@ -1723,6 +1724,12 @@ impl App {
                     .changed();
                 changed |= ui
                     .checkbox(
+                        &mut self.settings.show_path_numbers,
+                        "Show path numbers in tree",
+                    )
+                    .changed();
+                changed |= ui
+                    .checkbox(
                         &mut self.settings.clear_tree_on_disconnect,
                         "Clear tree on disconnect",
                     )
@@ -2014,6 +2021,7 @@ impl App {
         let opts = RenderOpts {
             pulse_ms: self.settings.boolean_pulse_ms,
             show_descriptions: self.settings.show_descriptions,
+            show_path_numbers: self.settings.show_path_numbers,
             order_by: self.settings.order_by,
             matrix_targets_on_top: self.settings.matrix_targets_on_top,
             armed: self.edits_armed(),
@@ -2498,6 +2506,7 @@ impl App {
         let opts = RenderOpts {
             pulse_ms: self.settings.boolean_pulse_ms,
             show_descriptions: self.settings.show_descriptions,
+            show_path_numbers: self.settings.show_path_numbers,
             order_by: self.settings.order_by,
             matrix_targets_on_top: self.settings.matrix_targets_on_top,
             armed,
@@ -2621,9 +2630,14 @@ fn render_entry(
                 .show_header(ui, |ui| {
                     // Clicking the node name (not just the triangle) toggles it,
                     // matching the address-book folders.
+                    let hover = if eff_online {
+                        format!("path {}", path_string(path))
+                    } else {
+                        format!("offline · path {}", path_string(path))
+                    };
                     let label = ui
                         .add(egui::Label::new(heading).sense(egui::Sense::click()))
-                        .on_hover_text(if eff_online { "" } else { "offline" });
+                        .on_hover_text(hover);
                     label.context_menu(|ui| context_copy(ui, path, &identifier));
                     name_clicked = label.clicked();
                 });
@@ -3329,6 +3343,7 @@ fn render_filtered(
     let eff_online = online && entry.is_online;
     if entry.kind.is_expandable() {
         ui.label(node_label(&entry, opts))
+            .on_hover_text(format!("path {}", path_string(&entry.path)))
             .context_menu(|ui| context_copy(ui, &entry.path, &entry.identifier));
         ui.indent(("filt", path), |ui| {
             let children = sorted_paths(&session.tree, &entry.children, opts.order_by);
@@ -3347,18 +3362,27 @@ fn render_filtered(
 /// Heading text for an expandable node (with optional description suffix).
 fn node_label(entry: &crate::model::Entry, opts: &RenderOpts) -> String {
     let base = format!("📁 {}", entry.label());
-    append_description(base, entry, opts)
+    append_path_number(append_description(base, entry, opts), entry, opts)
 }
 
 /// Label text for a parameter (with optional description suffix).
 fn param_label(entry: &crate::model::Entry, opts: &RenderOpts) -> String {
-    append_description(entry.label(), entry, opts)
+    append_path_number(append_description(entry.label(), entry, opts), entry, opts)
 }
 
 fn append_description(base: String, entry: &crate::model::Entry, opts: &RenderOpts) -> String {
     match (opts.show_descriptions, &entry.description) {
         (true, Some(d)) if !d.is_empty() => format!("{base} - {d}"),
         _ => base,
+    }
+}
+
+/// Append the element's numeric Ember+ path as subtext when enabled in settings.
+fn append_path_number(base: String, entry: &crate::model::Entry, opts: &RenderOpts) -> String {
+    if opts.show_path_numbers {
+        format!("{base}  ·  {}", path_string(&entry.path))
+    } else {
+        base
     }
 }
 

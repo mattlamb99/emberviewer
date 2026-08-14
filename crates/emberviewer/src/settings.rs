@@ -80,6 +80,9 @@ pub struct Settings {
     /// Show each element's description alongside its identifier in the tree.
     #[serde(default)]
     pub show_descriptions: bool,
+    /// Show each element's numeric Ember+ path alongside its identifier in the tree.
+    #[serde(default)]
+    pub show_path_numbers: bool,
     /// Clear a provider's tree when it disconnects.
     #[serde(default)]
     pub clear_tree_on_disconnect: bool,
@@ -143,6 +146,7 @@ impl Default for Settings {
             boolean_pulse_ms: default_pulse_ms(),
             order_by: OrderBy::default(),
             show_descriptions: false,
+            show_path_numbers: false,
             clear_tree_on_disconnect: false,
             send_keepalive: true,
             matrix_targets_on_top: true,
