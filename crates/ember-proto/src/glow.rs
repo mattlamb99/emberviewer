@@ -1260,4 +1260,133 @@ mod tests {
             assert_eq!(v, back);
         }
     }
+
+    /// Rewrite a definite-length BER encoding with every constructed TLV in
+    /// indefinite form (`0x80 ... 00 00`), as some providers send matrices.
+    fn to_indefinite(buf: &[u8]) -> Vec<u8> {
+        fn tlv(buf: &[u8], pos: &mut usize, out: &mut Vec<u8>) {
+            let tag = buf[*pos];
+            let mut p = *pos + 1;
+            out.push(tag);
+            if tag & 0x1f == 0x1f {
+                while buf[p] & 0x80 != 0 {
+                    out.push(buf[p]);
+                    p += 1;
+                }
+                out.push(buf[p]);
+                p += 1;
+            }
+            let l = buf[p];
+            p += 1;
+            let len = if l < 0x80 {
+                l as usize
+            } else {
+                let n = (l & 0x7f) as usize;
+                let v = buf[p..p + n]
+                    .iter()
+                    .fold(0usize, |a, b| (a << 8) | *b as usize);
+                p += n;
+                v
+            };
+            let end = p + len;
+            if tag & 0x20 != 0 {
+                out.push(0x80);
+                while p < end {
+                    tlv(buf, &mut p, out);
+                }
+                out.extend_from_slice(&[0, 0]);
+            } else {
+                if len < 0x80 {
+                    out.push(len as u8);
+                } else {
+                    out.extend_from_slice(&[0x82, (len >> 8) as u8, len as u8]);
+                }
+                out.extend_from_slice(&buf[p..end]);
+                p = end;
+            }
+            *pos = p;
+        }
+        let mut out = Vec::new();
+        let mut pos = 0;
+        while pos < buf.len() {
+            tlv(buf, &mut pos, &mut out);
+        }
+        out
+    }
+
+    fn conn_entry(target: i32, source: u32) -> ConnectionEntry {
+        ConnectionEntry(Connection {
+            target,
+            sources: Some(RelativeOid::from_arcs(&[source])),
+            operation: None,
+            disposition: None,
+        })
+    }
+
+    /// Sofie PR #52: indefinite-length matrix containers dropped every second
+    /// connection (or failed the whole message). All entries must survive.
+    #[test]
+    fn indefinite_length_matrix_connections_all_decode() {
+        let qm = QualifiedMatrix {
+            path: RelativeOid::from_arcs(&[1, 2]),
+            contents: None,
+            children: None,
+            targets: None,
+            sources: None,
+            connections: Some(ConnectionCollection(vec![
+                conn_entry(0, 5),
+                conn_entry(1, 6),
+                conn_entry(2, 7),
+            ])),
+        };
+        let root = Root::from_element(RootElement::QualifiedMatrix(qm));
+        let definite = encode_root(&root).unwrap();
+        let indef = to_indefinite(&definite);
+        assert_ne!(definite, indef);
+        let back = decode_root(&indef).expect("indefinite-length matrix decodes");
+        let Root::Elements(coll) = back else {
+            panic!("expected elements")
+        };
+        let RootElementEntry(RootElement::QualifiedMatrix(m)) = &coll.0[0] else {
+            panic!("expected qualified matrix")
+        };
+        let conns = &m.connections.as_ref().unwrap().0;
+        assert_eq!(conns.len(), 3);
+        assert_eq!(conns[2].0.target, 2);
+        assert_eq!(conns[2].0.sources.as_ref().unwrap().arcs(), vec![7]);
+    }
+
+    /// Sofie PRs #57/#58: requests carry only the path plus the value or
+    /// connection, never cached element contents.
+    #[test]
+    fn set_value_and_matrix_connect_are_minimal() {
+        let Root::Elements(coll) = Root::set_value_at(&[1, 2], Value::Integer(9)) else {
+            panic!()
+        };
+        let RootElementEntry(RootElement::QualifiedParameter(qp)) = &coll.0[0] else {
+            panic!()
+        };
+        assert!(qp.children.is_none());
+        let c = qp.contents.as_ref().unwrap();
+        assert_eq!(c.value_, Some(Value::Integer(9)));
+        assert_eq!(
+            c,
+            &ParameterContents {
+                value_: Some(Value::Integer(9)),
+                ..Default::default()
+            }
+        );
+
+        let Root::Elements(coll) =
+            Root::matrix_connect(&[1, 3], 4, &[2], connection_operation::CONNECT)
+        else {
+            panic!()
+        };
+        let RootElementEntry(RootElement::QualifiedMatrix(m)) = &coll.0[0] else {
+            panic!()
+        };
+        assert!(m.contents.is_none() && m.children.is_none());
+        assert!(m.targets.is_none() && m.sources.is_none());
+        assert_eq!(m.connections.as_ref().unwrap().0.len(), 1);
+    }
 }
